@@ -14,6 +14,9 @@ from collections import Counter, namedtuple
 import unicodedata
 from threading import Thread
 from pathlib import Path
+
+os.environ.setdefault("OPENCV_FFMPEG_LOGLEVEL", "-8")
+
 import cv2
 from Levenshtein import ratio
 from PIL import Image
@@ -498,7 +501,7 @@ class SubtitleExtractor:
                 return
             for line in iter(out.readline, b''):
                 line = line.decode("utf-8", errors="replace").strip()
-                if not line:
+                if not line or self._is_ignorable_decoder_log(line):
                     continue
                 output_lines.append(line)
                 self.append_output(line)
@@ -527,7 +530,7 @@ class SubtitleExtractor:
                         self.update_progress(frame_extract=(total_ms / duration_ms) * 100)
                 else:
                     line = line.strip()
-                    if line:
+                    if line and not self._is_ignorable_decoder_log(line):
                         output_lines.append(line)
                         self.append_output(line)
             out.close()
@@ -627,6 +630,11 @@ class SubtitleExtractor:
                     "Try transcoding the video or changing VideoSubFinder decoder in settings."
                 )
             return
+
+    @staticmethod
+    def _is_ignorable_decoder_log(line):
+        return "Unknown Metadata OBU type 6" in line
+
     def filter_watermark(self):
         """
         去除原始字幕文本中的水印区域的文本

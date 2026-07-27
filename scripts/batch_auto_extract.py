@@ -8,9 +8,12 @@ import argparse
 import json
 import logging
 import multiprocessing
+import os
 import sys
 from pathlib import Path
 from typing import Iterable, List, Sequence
+
+os.environ.setdefault("OPENCV_FFMPEG_LOGLEVEL", "-8")
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
