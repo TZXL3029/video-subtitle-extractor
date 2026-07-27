@@ -65,7 +65,7 @@ def extract_subtitles(data, text_recogniser, img, raw_subtitles,
                 overflow_area_rate = ((sub_area_size + coord_area - inter_area) / sub_area_size) - 1
                 # 如果越界比例低于设定阈值且该行文本识别的置信度高于设定阈值
                 not_overflow = overflow_area_rate <= options.SUB_AREA_DEVIATION_RATE
-                confident = prob > options.DROP_SCORE
+                confident = prob >= options.DROP_SCORE
                 if not_overflow and confident:
                     # 保留该帧
                     selected = True

@@ -29,6 +29,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--samples", type=int, default=None, help="Exact frame sample count for ROI detection.")
     parser.add_argument("--max-samples", type=int, default=1000, help="Upper bound of sampled frames per video.")
     parser.add_argument("--min-confidence", type=float, default=0.5, help="Minimum ROI confidence required to run OCR.")
+    parser.add_argument("--ocr-drop-score", type=int, default=70, help="Discard OCR text below this confidence percentage.")
     parser.add_argument("--no-roi-progress", action="store_true", help="Hide ROI frame sampling progress bars.")
     parser.add_argument(
         "--vsf-decoder",
@@ -42,6 +43,8 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
+    if not 0 <= args.ocr_drop_score <= 100:
+        raise SystemExit("--ocr-drop-score must be between 0 and 100")
     logging.basicConfig(level=getattr(logging, args.log_level), format="%(levelname)s: %(message)s")
     extensions = normalize_extensions(args.extensions)
     video_paths = collect_video_paths(args.inputs, extensions, recursive=args.recursive)
@@ -108,8 +111,10 @@ def process_video(video_path: Path, args: argparse.Namespace) -> str:
 
     try:
         from backend.main import SubtitleExtractor
+        from backend.config import config
         from backend.tools.constant import VideoSubFinderDecoder
 
+        config.dropScore.value = args.ocr_drop_score
         extractor = SubtitleExtractor(str(video_path))
         extractor.sub_area = subtitle_area
         extractor.scan_strategy = "vsf"
