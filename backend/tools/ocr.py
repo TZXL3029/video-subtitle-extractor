@@ -1,7 +1,7 @@
 import os
+from paddleocr import PaddleOCR
 from backend.config import *
 import importlib
-from paddleocr import PaddleOCR
 from backend.tools.hardware_accelerator import HardwareAccelerator
 from backend.tools.paddle_model_config import PaddleModelConfig
 
@@ -100,6 +100,10 @@ class OcrRecogniser:
             text_rec_score_thresh=0,
             device=device,
         )
+        if device == 'cpu':
+            # Keep CPU inference on the plain Paddle backend; MKLDNN/oneDNN can
+            # fail with PP-OCRv5 static models in some Windows Paddle 3.x builds.
+            kwargs['enable_mkldnn'] = False
         if model_config.DET_MODEL_NAME:
             kwargs['text_detection_model_name'] = model_config.DET_MODEL_NAME
         if model_config.REC_MODEL_NAME:

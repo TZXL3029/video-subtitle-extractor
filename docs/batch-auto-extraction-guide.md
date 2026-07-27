@@ -108,6 +108,32 @@ ROI 应适当放宽：
 - 已存在 SRT 时默认跳过，除非传入 `--force-srt`。
 - 单个视频失败不应中断整批任务。
 
+### 命令行用法
+
+第一版实现后，可从项目根目录运行：
+
+```shell
+python scripts/batch_auto_extract.py <视频文件或目录>
+```
+
+常用参数：
+
+```shell
+# 递归扫描目录
+python scripts/batch_auto_extract.py D:/videos --recursive
+
+# 重新识别 ROI，但保留已有 SRT 跳过逻辑
+python scripts/batch_auto_extract.py D:/videos --force-roi
+
+# 重新生成 SRT
+python scripts/batch_auto_extract.py D:/videos --force-srt
+
+# 提高自动 ROI 置信度阈值
+python scripts/batch_auto_extract.py D:/videos --min-confidence 0.65
+```
+
+脚本会在每个视频旁边生成 `*.subtitle_area.json`，并在高置信度时继续调用 `SubtitleExtractor(scan_strategy="vsf")` 生成同名 `.srt`。
+
 ## 需要的小改造
 
 当前 `SubtitleExtractor.run()` 的扫描策略是隐式选择：

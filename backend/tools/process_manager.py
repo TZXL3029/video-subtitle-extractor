@@ -9,7 +9,6 @@ import platform
 import logging
 import atexit
 import subprocess
-import concurrent.futures
 
 class ProcessManager:
     """
@@ -69,18 +68,17 @@ class ProcessManager:
         return False
     
     def terminate_all(self):
-        """并发终止所有管理的进程"""
-        with concurrent.futures.ThreadPoolExecutor() as executor:
-            futures = []
-            for process_id, process in list(self.processes.items()):
-                if isinstance(process, int):
-                    futures.append(executor.submit(self.terminate_by_pid, process))
-                else:
-                    futures.append(executor.submit(self.terminate_by_process, process))
-            
-            # 等待所有终止操作完成
-            concurrent.futures.wait(futures)
-        
+        """终止所有管理的进程。
+
+        atexit 阶段解释器可能已经开始关闭线程池模块，避免在这里创建
+        ThreadPoolExecutor，否则批处理正常结束时会打印无关异常。
+        """
+        for process_id, process in list(self.processes.items()):
+            if isinstance(process, int):
+                self.terminate_by_pid(process)
+            else:
+                self.terminate_by_process(process)
+
         # 清空进程字典
         self.processes.clear()
     

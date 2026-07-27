@@ -74,6 +74,9 @@ class SubtitleExtractor:
         self.subtitle_output_dir = os.path.join(self.temp_output_dir, 'subtitle')
         # 定义是否使用vsf提取字幕帧
         self.use_vsf = False
+        # 显式帧扫描策略。None 表示保持原有自动选择逻辑。
+        # 可选值："vsf"、"frame_det"、"fps"。
+        self.scan_strategy = None
         # 定义vsf的字幕输出路径
         self.vsf_subtitle = os.path.join(self.subtitle_output_dir, 'raw_vsf.srt')
         # 提取的原始字幕文本存储路径
@@ -133,17 +136,13 @@ class SubtitleExtractor:
         if not os.path.exists(self.subtitle_output_dir):
             os.makedirs(self.subtitle_output_dir)
         self.capture_frame_with_subtitle_area()
+        scan_strategy = self._select_scan_strategy()
         # 创建一个字幕OCR识别进程
         subtitle_ocr_process = self.start_subtitle_ocr_async()
-        if self.sub_area is not None:
-            if platform.system() in ['Windows', 'Linux', 'Darwin']:
-                # 使用GPU且使用accurate模式时才开放此方法：
-                if self.hardware_accelerator.has_accelerator() and config.mode.value == 'accurate':
-                    self.extract_frame_by_det()
-                else:
-                    self.extract_frame_by_vsf()
-            else:
-                self.extract_frame_by_fps()
+        if scan_strategy == 'vsf':
+            self.extract_frame_by_vsf()
+        elif scan_strategy == 'frame_det':
+            self.extract_frame_by_det()
         else:
             self.extract_frame_by_fps()
 
@@ -196,6 +195,30 @@ class SubtitleExtractor:
         self.lock.release()
         if config.generateTxt.value:
             self.srt2txt(self.subtitle_output_path)
+
+    def _select_scan_strategy(self):
+        """
+        选择帧扫描策略。
+
+        scan_strategy 为 None 时保持 GUI/CLI 既有自动选择行为：
+        有字幕区域时优先使用 VSF，GPU + accurate 模式下使用逐帧检测；
+        无字幕区域时使用固定 FPS 抽帧。
+        """
+        if self.scan_strategy is not None:
+            if self.scan_strategy not in ('vsf', 'frame_det', 'fps'):
+                raise ValueError(f"Unsupported scan_strategy: {self.scan_strategy}")
+            if self.scan_strategy == 'vsf' and self.sub_area is None:
+                raise ValueError("scan_strategy='vsf' requires sub_area")
+            return self.scan_strategy
+
+        if self.sub_area is not None:
+            if platform.system() in ['Windows', 'Linux', 'Darwin']:
+                # 使用GPU且使用accurate模式时才开放此方法：
+                if self.hardware_accelerator.has_accelerator() and config.mode.value == 'accurate':
+                    return 'frame_det'
+                return 'vsf'
+            return 'fps'
+        return 'fps'
 
     def capture_frame_with_subtitle_area(self):
         """
@@ -1093,7 +1116,7 @@ class SubtitleExtractor:
             except Exception as e:
                 traceback.print_exc()
 
-    def manage_process(pid):
+    def manage_process(self, pid):
         pass
 
 if __name__ == '__main__':

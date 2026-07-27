@@ -1,0 +1,448 @@
+# -*- coding: utf-8 -*-
+"""
+自动识别视频硬字幕的大致 ROI。
+
+该模块只负责 ROI 估计和 JSON 数据生成，不直接调度 OCR/SRT 流程。
+"""
+from __future__ import annotations
+
+import json
+import math
+from dataclasses import dataclass, field
+from pathlib import Path
+from statistics import mean, pstdev
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+
+METHOD_VERSION = "auto-roi-v1"
+Coordinate = Tuple[int, int, int, int]  # xmin, xmax, ymin, ymax
+
+
+@dataclass
+class SubtitleAreaCandidate:
+    roi: Coordinate
+    score: float
+    hits: int
+    frame_hits: int
+    time_bucket_hits: int
+
+    def to_json_dict(self) -> Dict[str, Any]:
+        xmin, xmax, ymin, ymax = self.roi
+        return {
+            "roi": {"xmin": xmin, "xmax": xmax, "ymin": ymin, "ymax": ymax},
+            "score": round(self.score, 4),
+            "hits": self.hits,
+            "frame_hits": self.frame_hits,
+            "time_bucket_hits": self.time_bucket_hits,
+        }
+
+
+@dataclass
+class AutoSubtitleAreaResult:
+    video: str
+    width: int
+    height: int
+    fps: float
+    frame_count: int
+    subtitle_roi: Optional[Coordinate]
+    confidence: float
+    sampled_frames: int
+    status: str
+    reason: str = ""
+    candidates: List[SubtitleAreaCandidate] = field(default_factory=list)
+    method_version: str = METHOD_VERSION
+
+    def to_subtitle_area(self):
+        if self.subtitle_roi is None:
+            return None
+        from backend.bean.subtitle_area import SubtitleArea
+
+        xmin, xmax, ymin, ymax = self.subtitle_roi
+        return SubtitleArea(ymin, ymax, xmin, xmax)
+
+    def to_json_dict(self) -> Dict[str, Any]:
+        data: Dict[str, Any] = {
+            "video": self.video,
+            "width": self.width,
+            "height": self.height,
+            "fps": self.fps,
+            "frame_count": self.frame_count,
+            "confidence": round(self.confidence, 4),
+            "sampled_frames": self.sampled_frames,
+            "method_version": self.method_version,
+            "status": self.status,
+            "candidates": [candidate.to_json_dict() for candidate in self.candidates],
+        }
+        if self.subtitle_roi is not None:
+            xmin, xmax, ymin, ymax = self.subtitle_roi
+            data["subtitle_roi"] = {"xmin": xmin, "xmax": xmax, "ymin": ymin, "ymax": ymax}
+        if self.reason:
+            data["reason"] = self.reason
+        return data
+
+    @classmethod
+    def from_json_dict(cls, data: Dict[str, Any]) -> "AutoSubtitleAreaResult":
+        roi_data = data.get("subtitle_roi")
+        roi = None
+        if roi_data:
+            roi = (
+                int(roi_data["xmin"]),
+                int(roi_data["xmax"]),
+                int(roi_data["ymin"]),
+                int(roi_data["ymax"]),
+            )
+        candidates = []
+        for candidate_data in data.get("candidates", []):
+            candidate_roi = candidate_data.get("roi", {})
+            candidates.append(
+                SubtitleAreaCandidate(
+                    roi=(
+                        int(candidate_roi.get("xmin", 0)),
+                        int(candidate_roi.get("xmax", 0)),
+                        int(candidate_roi.get("ymin", 0)),
+                        int(candidate_roi.get("ymax", 0)),
+                    ),
+                    score=float(candidate_data.get("score", 0)),
+                    hits=int(candidate_data.get("hits", 0)),
+                    frame_hits=int(candidate_data.get("frame_hits", 0)),
+                    time_bucket_hits=int(candidate_data.get("time_bucket_hits", 0)),
+                )
+            )
+        return cls(
+            video=str(data.get("video", "")),
+            width=int(data.get("width", 0)),
+            height=int(data.get("height", 0)),
+            fps=float(data.get("fps", 0)),
+            frame_count=int(data.get("frame_count", 0)),
+            subtitle_roi=roi,
+            confidence=float(data.get("confidence", 0)),
+            sampled_frames=int(data.get("sampled_frames", 0)),
+            status=str(data.get("status", "unknown")),
+            reason=str(data.get("reason", "")),
+            candidates=candidates,
+            method_version=str(data.get("method_version", METHOD_VERSION)),
+        )
+
+
+def detect_auto_subtitle_area(
+    video_path: str | Path,
+    *,
+    samples: Optional[int] = None,
+    max_samples: int = 1000,
+    min_confidence: float = 0.5,
+    detector: Optional[Any] = None,
+) -> AutoSubtitleAreaResult:
+    """
+    自动识别单个视频的字幕 ROI。
+
+    返回结果中的 ROI 为像素坐标，格式为 (xmin, xmax, ymin, ymax)。
+    """
+    import cv2
+    from backend.tools.subtitle_detect import SubtitleDetect
+
+    video_path = Path(video_path)
+    cap = cv2.VideoCapture(str(video_path))
+    if not cap.isOpened():
+        return _empty_result(video_path, "error", "video could not be opened")
+
+    try:
+        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        fps = float(cap.get(cv2.CAP_PROP_FPS) or 0)
+        frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+        if width <= 0 or height <= 0 or frame_count <= 0:
+            return AutoSubtitleAreaResult(
+                video=video_path.name,
+                width=width,
+                height=height,
+                fps=fps,
+                frame_count=frame_count,
+                subtitle_roi=None,
+                confidence=0,
+                sampled_frames=0,
+                status="error",
+                reason="invalid video metadata",
+            )
+
+        sample_frames = build_sample_frame_numbers(frame_count, fps, samples=samples, max_samples=max_samples)
+        detector = detector or SubtitleDetect()
+        observations, detect_errors = _collect_text_observations(cap, sample_frames, frame_count, width, height, detector)
+    finally:
+        cap.release()
+
+    candidates = _build_candidates(observations, width, height, max(len(sample_frames), 1))
+    if not candidates:
+        if detect_errors and len(detect_errors) >= len(sample_frames):
+            return AutoSubtitleAreaResult(
+                video=video_path.name,
+                width=width,
+                height=height,
+                fps=fps,
+                frame_count=frame_count,
+                subtitle_roi=None,
+                confidence=0,
+                sampled_frames=len(sample_frames),
+                status="error",
+                reason=f"text detection failed for all sampled frames: {detect_errors[-1]}",
+            )
+        reason = "no stable subtitle band found"
+        if detect_errors:
+            reason = f"{reason}; text detection failed on {len(detect_errors)} sampled frames"
+        return AutoSubtitleAreaResult(
+            video=video_path.name,
+            width=width,
+            height=height,
+            fps=fps,
+            frame_count=frame_count,
+            subtitle_roi=None,
+            confidence=0,
+            sampled_frames=len(sample_frames),
+            status="low_confidence",
+            reason=reason,
+        )
+
+    best = candidates[0]
+    padded_roi = _pad_roi(best.roi, width, height)
+    status = "ok" if best.score >= min_confidence else "low_confidence"
+    reason = "" if status == "ok" else "best subtitle band confidence below threshold"
+    return AutoSubtitleAreaResult(
+        video=video_path.name,
+        width=width,
+        height=height,
+        fps=fps,
+        frame_count=frame_count,
+        subtitle_roi=padded_roi if status == "ok" else None,
+        confidence=best.score,
+        sampled_frames=len(sample_frames),
+        status=status,
+        reason=reason,
+        candidates=candidates[:5],
+    )
+
+
+def build_sample_frame_numbers(
+    frame_count: int,
+    fps: float,
+    *,
+    samples: Optional[int] = None,
+    max_samples: int = 1000,
+) -> List[int]:
+    if frame_count <= 0:
+        return []
+    if samples is None:
+        duration_seconds = frame_count / fps if fps > 0 else 0
+        if duration_seconds and duration_seconds < 5 * 60:
+            samples = 240
+        elif duration_seconds and duration_seconds < 30 * 60:
+            samples = 600
+        else:
+            samples = 900
+
+    sample_count = max(1, min(int(samples), int(max_samples), frame_count))
+    if sample_count == 1:
+        return [max(0, frame_count // 2)]
+
+    # 避开极端首尾帧，同时保持全片均匀覆盖。
+    start = 0
+    end = frame_count - 1
+    if frame_count > 20:
+        start = int(frame_count * 0.02)
+        end = max(start, int(frame_count * 0.98))
+    step = (end - start) / float(sample_count - 1)
+    return sorted({max(0, min(frame_count - 1, int(round(start + i * step)))) for i in range(sample_count)})
+
+
+def save_result_json(result: AutoSubtitleAreaResult, output_path: str | Path) -> None:
+    output_path = Path(output_path)
+    output_path.write_text(json.dumps(result.to_json_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def load_result_json(input_path: str | Path) -> AutoSubtitleAreaResult:
+    data = json.loads(Path(input_path).read_text(encoding="utf-8"))
+    return AutoSubtitleAreaResult.from_json_dict(data)
+
+
+def _empty_result(video_path: Path, status: str, reason: str) -> AutoSubtitleAreaResult:
+    return AutoSubtitleAreaResult(
+        video=video_path.name,
+        width=0,
+        height=0,
+        fps=0,
+        frame_count=0,
+        subtitle_roi=None,
+        confidence=0,
+        sampled_frames=0,
+        status=status,
+        reason=reason,
+    )
+
+
+def _collect_text_observations(
+    cap: Any,
+    sample_frames: Sequence[int],
+    frame_count: int,
+    width: int,
+    height: int,
+    detector: Any,
+) -> Tuple[List[Dict[str, Any]], List[str]]:
+    import cv2
+    from backend.tools.ocr import get_coordinates
+
+    observations: List[Dict[str, Any]] = []
+    errors: List[str] = []
+    bucket_count = 10
+    for frame_no in sample_frames:
+        cap.set(cv2.CAP_PROP_POS_FRAMES, frame_no)
+        ok, frame = cap.read()
+        if not ok:
+            continue
+        try:
+            dt_boxes, _ = detector.detect_subtitle(frame)
+        except Exception as exc:
+            errors.append(f"{type(exc).__name__}: {exc}")
+            continue
+        if hasattr(dt_boxes, "tolist"):
+            dt_boxes = dt_boxes.tolist()
+        for coordinate in _filter_coordinates(get_coordinates(dt_boxes), width, height):
+            bucket = min(bucket_count - 1, int((frame_no / max(frame_count - 1, 1)) * bucket_count))
+            observations.append({"frame_no": frame_no, "bucket": bucket, "coordinate": coordinate})
+    return observations, errors
+
+
+def _filter_coordinates(coordinates: Iterable[Coordinate], width: int, height: int) -> Iterable[Coordinate]:
+    for xmin, xmax, ymin, ymax in coordinates:
+        xmin, xmax = sorted((int(xmin), int(xmax)))
+        ymin, ymax = sorted((int(ymin), int(ymax)))
+        box_w = xmax - xmin
+        box_h = ymax - ymin
+        if box_w <= 0 or box_h <= 0:
+            continue
+        width_ratio = box_w / width
+        height_ratio = box_h / height
+        center_x = (xmin + xmax) / 2
+        center_y = (ymin + ymax) / 2
+
+        if width_ratio < 0.02 or height_ratio < 0.008:
+            continue
+        if height_ratio > 0.18 or width_ratio > 0.96:
+            continue
+        # 过滤常见角落水印、台标、计时器。
+        in_side_corner = center_x < width * 0.18 or center_x > width * 0.82
+        if in_side_corner and width_ratio < 0.20:
+            continue
+        if center_y < height * 0.15 and width_ratio < 0.35:
+            continue
+        yield (xmin, xmax, ymin, ymax)
+
+
+def _build_candidates(
+    observations: Sequence[Dict[str, Any]],
+    width: int,
+    height: int,
+    sampled_frame_count: int,
+) -> List[SubtitleAreaCandidate]:
+    if not observations:
+        return []
+
+    tolerance = max(36, int(height * 0.08))
+    sorted_observations = sorted(observations, key=lambda item: _center_y(item["coordinate"]))
+    clusters: List[List[Dict[str, Any]]] = []
+    for observation in sorted_observations:
+        if not clusters:
+            clusters.append([observation])
+            continue
+        current_center = _center_y(observation["coordinate"])
+        cluster_center = mean(_center_y(item["coordinate"]) for item in clusters[-1])
+        if abs(current_center - cluster_center) <= tolerance:
+            clusters[-1].append(observation)
+        else:
+            clusters.append([observation])
+
+    candidates = [_score_cluster(cluster, width, height, sampled_frame_count, tolerance) for cluster in clusters]
+    return sorted(candidates, key=lambda candidate: candidate.score, reverse=True)
+
+
+def _score_cluster(
+    cluster: Sequence[Dict[str, Any]],
+    width: int,
+    height: int,
+    sampled_frame_count: int,
+    tolerance: int,
+) -> SubtitleAreaCandidate:
+    coordinates = [item["coordinate"] for item in cluster]
+    xmin = min(coord[0] for coord in coordinates)
+    xmax = max(coord[1] for coord in coordinates)
+    ymin = min(coord[2] for coord in coordinates)
+    ymax = max(coord[3] for coord in coordinates)
+    frame_hits = len({item["frame_no"] for item in cluster})
+    bucket_hits = len({item["bucket"] for item in cluster})
+    centers_y = [_center_y(coord) for coord in coordinates]
+    center_x = (xmin + xmax) / 2
+    width_ratio = (xmax - xmin) / width
+    center_score = 1 - min(abs(center_x - width / 2) / (width / 2), 1)
+    stability_score = 1 - min((pstdev(centers_y) if len(centers_y) > 1 else 0) / max(tolerance, 1), 1)
+    hit_score = min(frame_hits / max(5, sampled_frame_count * 0.12), 1)
+    temporal_score = min(bucket_hits / 6, 1)
+    width_score = _piecewise_width_score(width_ratio)
+    y_center = (ymin + ymax) / 2
+    y_score = 1.0 if y_center >= height * 0.45 else 0.72
+    score = (
+        hit_score * 0.32
+        + temporal_score * 0.22
+        + stability_score * 0.17
+        + center_score * 0.14
+        + width_score * 0.10
+        + y_score * 0.05
+    )
+    return SubtitleAreaCandidate(
+        roi=(xmin, xmax, ymin, ymax),
+        score=max(0, min(score, 1)),
+        hits=len(cluster),
+        frame_hits=frame_hits,
+        time_bucket_hits=bucket_hits,
+    )
+
+
+def _piecewise_width_score(width_ratio: float) -> float:
+    if 0.25 <= width_ratio <= 0.90:
+        return 1
+    if 0.12 <= width_ratio < 0.25:
+        return 0.75
+    if 0.90 < width_ratio <= 0.96:
+        return 0.65
+    return 0.35
+
+
+def _pad_roi(roi: Coordinate, width: int, height: int) -> Coordinate:
+    xmin, xmax, ymin, ymax = roi
+    x_pad = max(16, int(width * 0.07))
+    y_pad = min(80, max(30, int(height * 0.05)))
+    xmin = max(0, xmin - x_pad)
+    xmax = min(width, xmax + x_pad)
+    ymin = max(0, ymin - y_pad)
+    ymax = min(height, ymax + y_pad)
+
+    min_height = min(height, max(80, int(height * 0.10)))
+    if ymax - ymin < min_height:
+        extra = min_height - (ymax - ymin)
+        ymin = max(0, ymin - math.ceil(extra / 2))
+        ymax = min(height, ymax + math.floor(extra / 2))
+        if ymax - ymin < min_height and ymin == 0:
+            ymax = min(height, min_height)
+        elif ymax - ymin < min_height and ymax == height:
+            ymin = max(0, height - min_height)
+
+    return (int(xmin), int(xmax), int(ymin), int(ymax))
+
+
+def _center_y(coordinate: Coordinate) -> float:
+    return (coordinate[2] + coordinate[3]) / 2
+
+
+__all__ = [
+    "AutoSubtitleAreaResult",
+    "SubtitleAreaCandidate",
+    "build_sample_frame_numbers",
+    "detect_auto_subtitle_area",
+    "load_result_json",
+    "save_result_json",
+]
