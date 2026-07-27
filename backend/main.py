@@ -94,6 +94,8 @@ class SubtitleExtractor:
         # 显式帧扫描策略。None 表示保持原有自动选择逻辑。
         # 可选值："vsf"、"frame_det"、"fps"。
         self.scan_strategy = None
+        # 显式 VideoSubFinder 解码器。None 表示使用全局配置。
+        self.vsf_decoder = None
         # 定义vsf的字幕输出路径
         self.vsf_subtitle = os.path.join(self.subtitle_output_dir, 'raw_vsf.srt')
         # 提取的原始字幕文本存储路径
@@ -555,7 +557,7 @@ class SubtitleExtractor:
         if config.videoSubFinderCpuCores.value > 0:
             cpu_count = config.videoSubFinderCpuCores.value
 
-        selected_decoder = config.videoSubFinderDecoder.value
+        selected_decoder = self.vsf_decoder or config.videoSubFinderDecoder.value
         if not isinstance(selected_decoder, VideoSubFinderDecoder):
             selected_decoder = VideoSubFinderDecoder.FFMPEG if str(selected_decoder).lower() == "ffmpeg" else VideoSubFinderDecoder.OPENCV
         fallback_decoder = VideoSubFinderDecoder.FFMPEG if selected_decoder == VideoSubFinderDecoder.OPENCV else VideoSubFinderDecoder.OPENCV

@@ -30,6 +30,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-samples", type=int, default=1000, help="Upper bound of sampled frames per video.")
     parser.add_argument("--min-confidence", type=float, default=0.5, help="Minimum ROI confidence required to run OCR.")
     parser.add_argument("--no-roi-progress", action="store_true", help="Hide ROI frame sampling progress bars.")
+    parser.add_argument(
+        "--vsf-decoder",
+        default="ffmpeg",
+        choices=["ffmpeg", "opencv"],
+        help="VideoSubFinder video decoder. Batch mode defaults to ffmpeg to avoid OpenCV zero-size-frame popups.",
+    )
     parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
     return parser.parse_args()
 
@@ -102,10 +108,12 @@ def process_video(video_path: Path, args: argparse.Namespace) -> str:
 
     try:
         from backend.main import SubtitleExtractor
+        from backend.tools.constant import VideoSubFinderDecoder
 
         extractor = SubtitleExtractor(str(video_path))
         extractor.sub_area = subtitle_area
         extractor.scan_strategy = "vsf"
+        extractor.vsf_decoder = VideoSubFinderDecoder.FFMPEG if args.vsf_decoder == "ffmpeg" else VideoSubFinderDecoder.OPENCV
         extractor.run()
         logging.info("SRT generated: %s", extractor.subtitle_output_path)
         return "success"
