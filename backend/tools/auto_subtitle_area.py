@@ -130,6 +130,8 @@ def detect_auto_subtitle_area(
     max_samples: int = 1000,
     min_confidence: float = 0.5,
     detector: Optional[Any] = None,
+    show_progress: bool = False,
+    progress_desc: Optional[str] = None,
 ) -> AutoSubtitleAreaResult:
     """
     自动识别单个视频的字幕 ROI。
@@ -167,7 +169,16 @@ def detect_auto_subtitle_area(
 
         sample_frames = build_sample_frame_numbers(frame_count, fps, samples=samples, max_samples=max_samples)
         detector = detector or SubtitleDetect()
-        observations, detect_errors = _collect_text_observations(cap, sample_frames, frame_count, width, height, detector)
+        observations, detect_errors = _collect_text_observations(
+            cap,
+            sample_frames,
+            frame_count,
+            width,
+            height,
+            detector,
+            show_progress=show_progress,
+            progress_desc=progress_desc or f"ROI {video_path.name}",
+        )
     finally:
         cap.release()
 
@@ -285,6 +296,9 @@ def _collect_text_observations(
     width: int,
     height: int,
     detector: Any,
+    *,
+    show_progress: bool = False,
+    progress_desc: str = "ROI",
 ) -> Tuple[List[Dict[str, Any]], List[str]]:
     import cv2
     from backend.tools.ocr import get_coordinates
@@ -292,21 +306,36 @@ def _collect_text_observations(
     observations: List[Dict[str, Any]] = []
     errors: List[str] = []
     bucket_count = 10
-    for frame_no in sample_frames:
-        cap.set(cv2.CAP_PROP_POS_FRAMES, frame_no)
-        ok, frame = cap.read()
-        if not ok:
-            continue
-        try:
-            dt_boxes, _ = detector.detect_subtitle(frame)
-        except Exception as exc:
-            errors.append(f"{type(exc).__name__}: {exc}")
-            continue
-        if hasattr(dt_boxes, "tolist"):
-            dt_boxes = dt_boxes.tolist()
-        for coordinate in _filter_coordinates(get_coordinates(dt_boxes), width, height):
-            bucket = min(bucket_count - 1, int((frame_no / max(frame_count - 1, 1)) * bucket_count))
-            observations.append({"frame_no": frame_no, "bucket": bucket, "coordinate": coordinate})
+    frame_iterable = sample_frames
+    progress_bar = None
+    if show_progress:
+        from tqdm import tqdm
+
+        progress_bar = tqdm(total=len(sample_frames), desc=progress_desc, unit="frame", position=0, leave=True)
+
+    try:
+        for frame_no in frame_iterable:
+            try:
+                cap.set(cv2.CAP_PROP_POS_FRAMES, frame_no)
+                ok, frame = cap.read()
+                if not ok:
+                    continue
+                try:
+                    dt_boxes, _ = detector.detect_subtitle(frame)
+                except Exception as exc:
+                    errors.append(f"{type(exc).__name__}: {exc}")
+                    continue
+                if hasattr(dt_boxes, "tolist"):
+                    dt_boxes = dt_boxes.tolist()
+                for coordinate in _filter_coordinates(get_coordinates(dt_boxes), width, height):
+                    bucket = min(bucket_count - 1, int((frame_no / max(frame_count - 1, 1)) * bucket_count))
+                    observations.append({"frame_no": frame_no, "bucket": bucket, "coordinate": coordinate})
+            finally:
+                if progress_bar is not None:
+                    progress_bar.update(1)
+    finally:
+        if progress_bar is not None:
+            progress_bar.close()
     return observations, errors
 
 

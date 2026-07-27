@@ -29,6 +29,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--samples", type=int, default=None, help="Exact frame sample count for ROI detection.")
     parser.add_argument("--max-samples", type=int, default=1000, help="Upper bound of sampled frames per video.")
     parser.add_argument("--min-confidence", type=float, default=0.5, help="Minimum ROI confidence required to run OCR.")
+    parser.add_argument("--no-roi-progress", action="store_true", help="Hide ROI frame sampling progress bars.")
     parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
     return parser.parse_args()
 
@@ -127,6 +128,8 @@ def get_or_detect_roi(video_path: Path, roi_path: Path, args: argparse.Namespace
         samples=args.samples,
         max_samples=args.max_samples,
         min_confidence=args.min_confidence,
+        show_progress=not args.no_roi_progress,
+        progress_desc=f"ROI {video_path.name}",
     )
     save_result_json(result, roi_path)
     logging.info("ROI JSON saved: %s status=%s confidence=%.4f", roi_path, result.status, result.confidence)
