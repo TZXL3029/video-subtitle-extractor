@@ -16,6 +16,7 @@ from ui.icon.my_fluent_icon import MyFluentIcon
 from backend.config import config, tr
 from backend.tools.subtitle_extractor_remote_call import SubtitleExtractorRemoteCall
 from backend.tools.process_manager import ProcessManager
+from backend.tools.video_metadata import read_video_metadata
 
 # --- Python 3.12 + Six + PySide Compatibility Patch ---
 try:
@@ -574,10 +575,15 @@ class HomeInterface(QWidget):
         ret, frame = self.video_cap.read()
         if not ret:
             return False
-        self.frame_count = int(self.video_cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        self.frame_height = int(self.video_cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        self.frame_width = int(self.video_cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        self.fps = self.video_cap.get(cv2.CAP_PROP_FPS)
+        video_metadata = read_video_metadata(cap=self.video_cap, sample_frame=frame)
+        if not video_metadata.has_valid_dimensions or not video_metadata.has_valid_timeline:
+            self.video_cap.release()
+            self.video_cap = None
+            return False
+        self.frame_count = video_metadata.frame_count
+        self.frame_height = video_metadata.height
+        self.frame_width = video_metadata.width
+        self.fps = video_metadata.fps
         
         self.update_preview(frame)
         self.video_slider.setMaximum(self.frame_count)
@@ -633,4 +639,3 @@ class HomeInterface(QWidget):
         except Exception as e:
             print(f"Error during close window:", e)
         super().closeEvent(event)
-    

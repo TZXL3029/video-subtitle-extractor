@@ -32,6 +32,8 @@ from backend.tools.paddle_model_config import PaddleModelConfig
 from backend.tools.process_manager import ProcessManager
 from backend.tools.subtitle_detect import SubtitleDetect
 from backend.bean.subtitle_area import SubtitleArea
+from backend.tools.constant import VideoSubFinderDecoder
+from backend.tools.video_metadata import read_video_metadata
 import threading
 import platform
 import multiprocessing
@@ -57,17 +59,32 @@ class SubtitleExtractor:
         # 视频路径
         self.video_path = vd_path
         self.video_cap = cv2.VideoCapture(vd_path)
+        if not self.video_cap.isOpened():
+            raise ValueError(f"Unable to open video: {vd_path}")
+        video_metadata = read_video_metadata(cap=self.video_cap)
+        if not video_metadata.has_valid_dimensions:
+            self.video_cap.release()
+            raise ValueError(
+                f"Invalid video dimensions: width={video_metadata.width}, height={video_metadata.height}. "
+                "Please try transcoding the video or switching the VideoSubFinder decoder to FFmpeg."
+            )
+        if not video_metadata.has_valid_timeline:
+            self.video_cap.release()
+            raise ValueError(
+                f"Invalid video timeline metadata: fps={video_metadata.fps}, "
+                f"frame_count={video_metadata.frame_count}."
+            )
         # 通过视频路径获取视频名称
         self.vd_name = Path(self.video_path).stem
         # 临时存储文件夹
         self.temp_output_dir = os.path.join(os.path.dirname(BASE_DIR), 'output', str(self.vd_name))
         # 视频帧总数
-        self.frame_count = self.video_cap.get(cv2.CAP_PROP_FRAME_COUNT)
+        self.frame_count = video_metadata.frame_count
         # 视频帧率
-        self.fps = self.video_cap.get(cv2.CAP_PROP_FPS)
+        self.fps = video_metadata.fps
         # 视频尺寸
-        self.frame_height = int(self.video_cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        self.frame_width = int(self.video_cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        self.frame_height = video_metadata.height
+        self.frame_width = video_metadata.width
         # 提取的视频帧储存目录
         self.frame_output_dir = os.path.join(self.temp_output_dir, 'frames')
         # 提取的字幕文件存储目录
@@ -454,11 +471,42 @@ class SubtitleExtractor:
                 except FileNotFoundError:
                     return
 
-        def vsf_output(out, ):
+        def has_vsf_output():
+            time_pattern = re.compile(r'^\d+_\d+_\d+_\d+__')
+            rgb_images_path = os.path.join(self.temp_output_dir, 'RGBImages')
+            if os.path.exists(self.vsf_subtitle) and os.path.getsize(self.vsf_subtitle) > 0:
+                return True
+            if not os.path.exists(rgb_images_path):
+                return False
+            try:
+                return any(time_pattern.match(filename) for filename in os.listdir(rgb_images_path))
+            except FileNotFoundError:
+                return False
+
+        def remove_vsf_outputs():
+            for dirname in ('RGBImages', 'TXTImages', 'TXTImagesJoined', 'TXTResults', 'TestImages', 'ILAImages', 'ISAImages'):
+                path = os.path.join(self.temp_output_dir, dirname)
+                if os.path.exists(path):
+                    shutil.rmtree(path, True)
+            if os.path.exists(self.vsf_subtitle):
+                os.remove(self.vsf_subtitle)
+
+        def collect_vsf_output(out, output_lines):
+            if out is None:
+                return
+            for line in iter(out.readline, b''):
+                line = line.decode("utf-8", errors="replace").strip()
+                if not line:
+                    continue
+                output_lines.append(line)
+                self.append_output(line)
+            out.close()
+
+        def vsf_output(out, output_lines):
             duration_ms = (self.frame_count / self.fps) * 1000
             last_total_ms = 0
             for line in iter(out.readline, b''):
-                line = line.decode("utf-8")
+                line = line.decode("utf-8", errors="replace")
                 # self.append_output('line', line, type(line), line.startswith('Frame: '))
                 if line.startswith('Frame: '):
                     line = line.replace("\n", "")
@@ -476,7 +524,10 @@ class SubtitleExtractor:
                     else:
                         self.update_progress(frame_extract=(total_ms / duration_ms) * 100)
                 else:
-                    self.append_output(line.strip())
+                    line = line.strip()
+                    if line:
+                        output_lines.append(line)
+                        self.append_output(line)
             out.close()
 
         # 定义videoSubFinder所在路径
@@ -503,41 +554,77 @@ class SubtitleExtractor:
             cpu_count = max(multiprocessing.cpu_count() - 2, 1)
         if config.videoSubFinderCpuCores.value > 0:
             cpu_count = config.videoSubFinderCpuCores.value
-        if platform.system() == 'Windows':
-            # 定义执行命令
-            cmd = f"{path_vsf} --use_cuda -c -r -i \"{self.video_path}\" -o \"{self.temp_output_dir}\" -ces \"{self.vsf_subtitle}\" "
-            cmd += f"-te {top_end} -be {bottom_end} -le {left_end} -re {right_end} -nthr {cpu_count} -nocrthr {cpu_count} "
-            cmd += f"--open_video_{config.videoSubFinderDecoder.value.value.lower()} "
-            # 计算进度
+
+        selected_decoder = config.videoSubFinderDecoder.value
+        if not isinstance(selected_decoder, VideoSubFinderDecoder):
+            selected_decoder = VideoSubFinderDecoder.FFMPEG if str(selected_decoder).lower() == "ffmpeg" else VideoSubFinderDecoder.OPENCV
+        fallback_decoder = VideoSubFinderDecoder.FFMPEG if selected_decoder == VideoSubFinderDecoder.OPENCV else VideoSubFinderDecoder.OPENCV
+        decoders = [selected_decoder, fallback_decoder]
+
+        def build_vsf_command(decoder):
+            if platform.system() == 'Windows':
+                cmd = f"{path_vsf} --use_cuda -c -r -i \"{self.video_path}\" -o \"{self.temp_output_dir}\" -ces \"{self.vsf_subtitle}\" "
+                cmd += f"-te {top_end} -be {bottom_end} -le {left_end} -re {right_end} -nthr {cpu_count} -nocrthr {cpu_count} "
+            else:
+                cmd = f"{path_vsf} -c -r -i \"{self.video_path}\" -o \"{self.temp_output_dir}\" -ces \"{self.vsf_subtitle}\" "
+                if self.hardware_accelerator.has_accelerator():
+                    cmd += "--use_cuda "
+                cmd += f"-te {top_end} -be {bottom_end} -le {left_end} -re {right_end} -nthr {cpu_count} -dsi "
+            cmd += f"--open_video_{decoder.value.lower()} "
+            return cmd
+
+        def run_vsf_once(decoder):
+            cmd = build_vsf_command(decoder)
+            output_lines = []
+            count_thread = None
+            self.append_output(f"VideoSubFinder decoder: {decoder.value}")
             try:
                 self.vsf_running = True
-                Thread(target=count_process, daemon=True).start()       
-                # 已知BUG: test_chinese_cht.flv在net drive上会导致无法停止, 但在本地不会, 可能是vsf的原因
-                p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=1,
-                                    close_fds='posix' in sys.builtin_module_names, shell=False, creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
+                output_threads = []
+                if platform.system() == 'Windows':
+                    count_thread = Thread(target=count_process, daemon=True)
+                    count_thread.start()
+                    # 已知BUG: test_chinese_cht.flv在net drive上会导致无法停止, 但在本地不会, 可能是vsf的原因
+                    p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=1,
+                                        close_fds='posix' in sys.builtin_module_names, shell=False, creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
+                    output_threads.append(Thread(target=collect_vsf_output, daemon=True, args=(p.stdout, output_lines)))
+                    output_threads.append(Thread(target=collect_vsf_output, daemon=True, args=(p.stderr, output_lines)))
+                else:
+                    p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=1,
+                                        close_fds='posix' in sys.builtin_module_names, shell=True,
+                                        start_new_session=True)
+                    output_threads.append(Thread(target=collect_vsf_output, daemon=True, args=(p.stdout, output_lines)))
+                    output_threads.append(Thread(target=vsf_output, daemon=True, args=(p.stderr, output_lines)))
+                for thread in output_threads:
+                    thread.start()
                 ProcessManager.instance().add_process(p)
                 self.manage_process(p.pid)
                 p.wait()
+                for thread in output_threads:
+                    thread.join(timeout=1)
+                return p.returncode, "\n".join(output_lines)
             finally:
                 self.vsf_running = False
-        else:
-            # 定义执行命令
-            cmd = f"{path_vsf} -c -r -i \"{self.video_path}\" -o \"{self.temp_output_dir}\" -ces \"{self.vsf_subtitle}\" "
-            if self.hardware_accelerator.has_accelerator():
-                cmd += "--use_cuda "
-            cmd += f"-te {top_end} -be {bottom_end} -le {left_end} -re {right_end} -nthr {cpu_count} -dsi "
-            cmd += f"--open_video_{config.videoSubFinderDecoder.value.value.lower()} "
-            self.vsf_running = True
-            try:
-                p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=1,
-                                    close_fds='posix' in sys.builtin_module_names, shell=True,
-                                    start_new_session=True)
-                Thread(target=vsf_output, daemon=True, args=(p.stderr,)).start()
-                ProcessManager.instance().add_process(p)
-                self.manage_process(p.pid)
-                p.wait()
-            finally:
-                self.vsf_running = False
+                if count_thread is not None:
+                    count_thread.join(timeout=1)
+
+        last_return_code = 0
+        last_output = ""
+        for index, decoder in enumerate(decoders):
+            last_return_code, last_output = run_vsf_once(decoder)
+            wrong_frame_size = "wrong frame sizes" in last_output.lower() or "frame_width: 0" in last_output.lower() or "frame_height: 0" in last_output.lower()
+            produced_output = has_vsf_output()
+            should_retry = (wrong_frame_size or last_return_code != 0) and not produced_output and index + 1 < len(decoders)
+            if should_retry:
+                self.append_output(f"VideoSubFinder failed with {decoder.value}; retrying with {decoders[index + 1].value}")
+                remove_vsf_outputs()
+                continue
+            if last_return_code != 0 and not produced_output:
+                raise RuntimeError(
+                    f"VideoSubFinder failed with decoder {decoder.value}. "
+                    "Try transcoding the video or changing VideoSubFinder decoder in settings."
+                )
+            return
     def filter_watermark(self):
         """
         去除原始字幕文本中的水印区域的文本

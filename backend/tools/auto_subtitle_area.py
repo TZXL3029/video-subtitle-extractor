@@ -138,6 +138,7 @@ def detect_auto_subtitle_area(
     """
     import cv2
     from backend.tools.subtitle_detect import SubtitleDetect
+    from backend.tools.video_metadata import read_video_metadata
 
     video_path = Path(video_path)
     cap = cv2.VideoCapture(str(video_path))
@@ -145,10 +146,11 @@ def detect_auto_subtitle_area(
         return _empty_result(video_path, "error", "video could not be opened")
 
     try:
-        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        fps = float(cap.get(cv2.CAP_PROP_FPS) or 0)
-        frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+        metadata = read_video_metadata(cap=cap)
+        width = metadata.width
+        height = metadata.height
+        fps = metadata.fps
+        frame_count = metadata.frame_count
         if width <= 0 or height <= 0 or frame_count <= 0:
             return AutoSubtitleAreaResult(
                 video=video_path.name,
@@ -160,7 +162,7 @@ def detect_auto_subtitle_area(
                 confidence=0,
                 sampled_frames=0,
                 status="error",
-                reason="invalid video metadata",
+                reason=f"invalid video metadata: width={width}, height={height}, frame_count={frame_count}",
             )
 
         sample_frames = build_sample_frame_numbers(frame_count, fps, samples=samples, max_samples=max_samples)
