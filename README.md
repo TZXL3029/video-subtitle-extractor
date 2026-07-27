@@ -219,6 +219,53 @@ python gui.py
 python ./backend/main.py
 ```
 
+#### 6. 自动批量提取来源较杂的视频
+
+如果批量视频的分辨率、字幕位置不一致，可以使用自动批量提取脚本。脚本会对每个视频自动检测字幕区域 ROI，生成 `*.subtitle_area.json`，高置信度时继续调用 VideoSubFinder + OCR 生成同名 `.srt`。
+
+```shell
+python scripts/batch_auto_extract.py <视频文件或目录>
+```
+
+常用示例：
+
+```shell
+# 处理单个视频
+python scripts/batch_auto_extract.py D:/videos/demo.mp4
+
+# 处理目录中的视频
+python scripts/batch_auto_extract.py D:/videos
+
+# 递归处理子目录
+python scripts/batch_auto_extract.py D:/videos --recursive
+
+# 已有 ROI JSON 时默认复用；如需重新识别 ROI
+python scripts/batch_auto_extract.py D:/videos --force-roi
+
+# 已有 SRT 时默认跳过；如需重新生成 SRT
+python scripts/batch_auto_extract.py D:/videos --force-srt
+
+# 调整 ROI 置信度阈值，低于阈值的视频会跳过，不会中断整批任务
+python scripts/batch_auto_extract.py D:/videos --min-confidence 0.65
+
+# 控制 ROI 抽样帧数，数值越大越稳但越慢
+python scripts/batch_auto_extract.py D:/videos --samples 600 --max-samples 1000
+```
+
+输出文件示例：
+
+```text
+demo.mp4
+demo.subtitle_area.json
+demo.srt
+```
+
+断点续跑规则：
+
+- 已存在 `*.subtitle_area.json` 时默认复用，除非传入 `--force-roi`。
+- 已存在 `.srt` 时默认跳过，除非传入 `--force-srt`。
+- 单个视频失败或 ROI 置信度过低时只记录日志，不会中断整批任务。
+
 ## 常见问题与解决方案
 
 #### 1. 运行不正常/没有结果/cuda及cudnn问题

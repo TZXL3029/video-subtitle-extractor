@@ -17,6 +17,15 @@ from backend.config import config, tr
 from backend.tools.subtitle_extractor_remote_call import SubtitleExtractorRemoteCall
 from backend.tools.process_manager import ProcessManager
 
+# --- Python 3.12 + Six + PySide Compatibility Patch ---
+try:
+    import six
+    if hasattr(six, '_SixMetaPathImporter'):
+        six._SixMetaPathImporter._path = None
+except ImportError:
+    pass
+# ------------------------------------------------------
+
 class HomeInterface(QWidget):
     progress_signal = Signal(int, int, int, bool, int) 
     append_log_signal = Signal(list)
