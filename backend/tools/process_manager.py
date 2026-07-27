@@ -9,6 +9,7 @@ import platform
 import logging
 import atexit
 import subprocess
+import sys
 
 class ProcessManager:
     """
@@ -28,9 +29,14 @@ class ProcessManager:
         """初始化进程管理器"""
         self.processes = {}
         self.logger = logging.getLogger(__name__)
+        self._interpreter_exiting = False
         
         # 注册退出处理函数
-        atexit.register(self.terminate_all)
+        atexit.register(self._terminate_at_exit)
+
+    def _terminate_at_exit(self):
+        self._interpreter_exiting = True
+        self.terminate_all()
     
     def add_process(self, process, name=None):
         """
@@ -75,6 +81,8 @@ class ProcessManager:
         """
         for process_id, process in list(self.processes.items()):
             if isinstance(process, int):
+                if self._interpreter_exiting:
+                    continue
                 self.terminate_by_pid(process)
             else:
                 self.terminate_by_process(process)
@@ -89,6 +97,8 @@ class ProcessManager:
             print(f"Terminating process: pid: {process.pid}")
             if hasattr(process, 'poll') and process.poll() is not None:
                 # 进程已经结束，直接返回
+                return
+            if hasattr(process, 'is_alive') and not process.is_alive():
                 return
                 
             # 进程还在运行
@@ -109,9 +119,13 @@ class ProcessManager:
         except Exception as e:
             # print(f"Error terminating process: {str(e)}")
             pass
+        if self._interpreter_exiting or sys.is_finalizing():
+            return
         self.terminate_by_pid(process.pid)
 
     def terminate_by_pid(self, pid):
+        if self._interpreter_exiting or sys.is_finalizing():
+            return
         try:
             # 使用系统命令强制终止进程
             if platform.system() == 'Windows':

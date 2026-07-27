@@ -765,6 +765,7 @@ class SubtitleExtractor:
                     subtitle_line = f'{line_code}\n{frame_start} --> {frame_end}\n{frame_content}\n'
                     f.write(subtitle_line)
             self.append_output(tr['Main']['SubLocation'].format(self.subtitle_output_path))
+            self._merge_adjacent_duplicate_subtitles(self.subtitle_output_path)
             # 返回持续时间低于1s的字幕行
             return post_process_subtitle
 
@@ -798,7 +799,33 @@ class SubtitleExtractor:
                 continue
 
         pysrt.SubRipFile(final_subtitles).save(self.subtitle_output_path, encoding='utf-8')
+        self._merge_adjacent_duplicate_subtitles(self.subtitle_output_path)
         self.append_output(tr['Main']['SubLocation'].format(self.subtitle_output_path))
+
+    def _merge_adjacent_duplicate_subtitles(self, subtitle_path, max_gap_ms=120):
+        subs = pysrt.open(subtitle_path, encoding='utf-8')
+        if len(subs) <= 1:
+            return
+
+        merged_subs = []
+        for sub in subs:
+            if merged_subs and self._is_same_subtitle_text(merged_subs[-1].text, sub.text) and sub.start.ordinal <= merged_subs[-1].end.ordinal + max_gap_ms:
+                if sub.end.ordinal > merged_subs[-1].end.ordinal:
+                    merged_subs[-1].end = sub.end
+                continue
+            sub.index = len(merged_subs) + 1
+            merged_subs.append(sub)
+
+        if len(merged_subs) == len(subs):
+            return
+
+        for index, sub in enumerate(merged_subs, start=1):
+            sub.index = index
+        pysrt.SubRipFile(merged_subs).save(subtitle_path, encoding='utf-8')
+
+    @staticmethod
+    def _is_same_subtitle_text(left, right):
+        return ''.join(unicodedata.normalize('NFKC', left).split()) == ''.join(unicodedata.normalize('NFKC', right).split())
 
     def _detect_watermark_area(self):
         """
