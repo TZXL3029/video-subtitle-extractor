@@ -19,7 +19,6 @@ Coordinate = Tuple[int, int, int, int]  # xmin, xmax, ymin, ymax
 TPR_NOISE_MAX = 0.10
 TPR_PRIMARY_MIN = 0.20
 TPR_PRIMARY_MAX = 0.75
-TPR_WATERMARK_MIN = 0.85
 
 
 @dataclass
@@ -484,15 +483,13 @@ def _score_cluster(
 def _score_temporal_presence(tpr: float) -> Tuple[float, str, bool, str]:
     if tpr < TPR_NOISE_MAX:
         return 0.0, "random_noise_or_background_text", True, "TPR < 10%"
-    if tpr > TPR_WATERMARK_MIN:
-        return 0.0, "fixed_watermark_or_logo", True, "TPR > 85%"
     if TPR_PRIMARY_MIN <= tpr <= TPR_PRIMARY_MAX:
         return 1.0, "primary_subtitle", False, ""
     if tpr < TPR_PRIMARY_MIN:
         progress = (tpr - TPR_NOISE_MAX) / max(TPR_PRIMARY_MIN - TPR_NOISE_MAX, 0.001)
         return 0.35 + max(0.0, min(progress, 1.0)) * 0.40, "low_presence", False, ""
 
-    progress = (tpr - TPR_PRIMARY_MAX) / max(TPR_WATERMARK_MIN - TPR_PRIMARY_MAX, 0.001)
+    progress = (tpr - TPR_PRIMARY_MAX) / max(1.0 - TPR_PRIMARY_MAX, 0.001)
     return 0.75 - max(0.0, min(progress, 1.0)) * 0.50, "high_presence", False, ""
 
 
