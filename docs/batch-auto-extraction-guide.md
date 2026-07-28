@@ -151,8 +151,8 @@ python scripts/batch_auto_extract.py D:/videos --no-vsf-transcode
 ```
 
 脚本会在每个视频旁边生成 `*.subtitle_area.json`，并在高置信度时继续调用 `SubtitleExtractor(scan_strategy="vsf")` 生成同名 `.srt`。
-批处理默认会在项目 `output/<视频名>/vsf_input.mp4` 生成一个临时 H.264/yuv420p 兼容副本，供 VideoSubFinder 和后续 OCR 取帧使用；VideoSubFinder 默认先用 OpenCV 解码，失败且未产出结果时自动重试 FFmpeg；最终 `.srt` 仍输出到原视频旁边。
-当多个 ROI 候选同时达到置信度阈值时，批处理会为每个候选生成临时 SRT，提取文本后和标准招式字库做快速子串匹配；最终只复制匹配得分最高的 SRT 到原视频旁边，其他候选临时结果会被删除。
+批处理默认会在 ROI 识别结束后，在项目 `output/<视频名>_vsf_input/vsf_input.mp4` 生成一个临时 H.264/yuv420p 兼容副本，供后续所有 VideoSubFinder 候选和 OCR 取帧共用；VideoSubFinder 默认先用 OpenCV 解码，失败且未产出结果时自动重试 FFmpeg；最终 `.srt` 仍输出到原视频旁边。
+当多个 ROI 候选同时达到置信度阈值时，批处理会为每个候选生成临时 SRT，提取文本后和标准招式字库做快速子串匹配；最终只复制匹配得分最高的 SRT 到原视频旁边，共享转码副本和其他候选临时结果会被删除。
 
 ## 需要的小改造
 

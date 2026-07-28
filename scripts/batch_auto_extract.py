@@ -125,16 +125,34 @@ def process_video(video_path: Path, args: argparse.Namespace) -> str:
         logging.warning("Low-confidence ROI skipped: %s confidence=%.4f reason=%s", video_path, result.confidence, result.reason)
         return "low_confidence"
 
+    shared_vsf_input_root = None
     try:
+        shared_vsf_input_path, shared_vsf_input_root = prepare_shared_vsf_input_after_roi(video_path, args)
         if len(candidate_entries) > 1 and args.label_matcher and args.label_matcher.terms:
-            return extract_and_select_candidate_srt(video_path, roi_path, result, candidate_entries, args)
+            return extract_and_select_candidate_srt(
+                video_path,
+                roi_path,
+                result,
+                candidate_entries,
+                args,
+                vsf_input_video_path=shared_vsf_input_path,
+            )
 
-        extractor = run_subtitle_extractor(video_path, subtitle_area, args, subtitle_output_path=srt_path)
+        extractor = run_subtitle_extractor(
+            video_path,
+            subtitle_area,
+            args,
+            subtitle_output_path=srt_path,
+            vsf_input_video_path=shared_vsf_input_path,
+        )
         logging.info("SRT generated: %s", extractor.subtitle_output_path)
         return "success"
     except Exception:
         logging.exception("Subtitle extraction failed: %s", video_path)
         return "failed"
+    finally:
+        if shared_vsf_input_root is not None:
+            shutil.rmtree(shared_vsf_input_root, ignore_errors=True)
 
 
 def get_or_detect_roi(video_path: Path, roi_path: Path, args: argparse.Namespace):
@@ -174,7 +192,33 @@ def load_label_matcher(label_config_dir: str):
     return matcher
 
 
-def extract_and_select_candidate_srt(video_path: Path, roi_path: Path, result, candidate_entries, args) -> str:
+def prepare_shared_vsf_input_after_roi(video_path: Path, args: argparse.Namespace) -> tuple[Path, Path | None]:
+    if args.no_vsf_transcode:
+        return video_path, None
+
+    from backend.tools.video_transcode import transcode_video_for_vsf
+
+    shared_root = PROJECT_ROOT / "output" / f"{video_path.stem}_vsf_input"
+    shutil.rmtree(shared_root, ignore_errors=True)
+    shared_root.mkdir(parents=True, exist_ok=True)
+    output_path = shared_root / "vsf_input.mp4"
+    logging.info("Transcode once after ROI detection: %s", output_path)
+    try:
+        return Path(transcode_video_for_vsf(video_path, output_path)), shared_root
+    except Exception:
+        shutil.rmtree(shared_root, ignore_errors=True)
+        raise
+
+
+def extract_and_select_candidate_srt(
+    video_path: Path,
+    roi_path: Path,
+    result,
+    candidate_entries,
+    args,
+    *,
+    vsf_input_video_path: Path,
+) -> str:
     from backend.config import config
     from backend.tools.auto_subtitle_area import save_result_json
     from backend.tools.label_text_matcher import read_srt_text
@@ -204,6 +248,7 @@ def extract_and_select_candidate_srt(video_path: Path, roi_path: Path, result, c
                     args,
                     subtitle_output_path=candidate_srt,
                     temp_output_dir=candidate_work_dir,
+                    vsf_input_video_path=vsf_input_video_path,
                 )
             except Exception:
                 logging.exception("ROI candidate extraction failed: %s candidate=%s", video_path, ordinal)
@@ -272,6 +317,7 @@ def run_subtitle_extractor(
     *,
     subtitle_output_path: Path,
     temp_output_dir: Path | None = None,
+    vsf_input_video_path: Path | None = None,
 ):
     from backend.main import SubtitleExtractor
     from backend.config import config
@@ -282,10 +328,12 @@ def run_subtitle_extractor(
     if temp_output_dir is not None:
         configure_extractor_temp_paths(extractor, temp_output_dir)
     extractor.subtitle_output_path = str(subtitle_output_path)
+    if vsf_input_video_path is not None:
+        extractor.vsf_input_video_path = str(vsf_input_video_path)
     extractor.sub_area = subtitle_area
     extractor.scan_strategy = "vsf"
     extractor.vsf_decoder = VideoSubFinderDecoder.FFMPEG if args.vsf_decoder == "ffmpeg" else VideoSubFinderDecoder.OPENCV
-    extractor.transcode_before_vsf = not args.no_vsf_transcode
+    extractor.transcode_before_vsf = not args.no_vsf_transcode and vsf_input_video_path is None
     extractor.run()
     return extractor
 

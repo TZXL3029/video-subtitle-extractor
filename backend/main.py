@@ -642,6 +642,8 @@ class SubtitleExtractor:
             return
 
     def _prepare_vsf_input_video(self):
+        if self.vsf_input_video_path and self.vsf_input_video_path != self.video_path and not self.transcode_before_vsf:
+            return self.vsf_input_video_path
         self.vsf_input_video_path = self.video_path
         if not self.transcode_before_vsf:
             return self.video_path
