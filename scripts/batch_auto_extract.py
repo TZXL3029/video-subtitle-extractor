@@ -36,9 +36,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--no-roi-progress", action="store_true", help="Hide ROI frame sampling progress bars.")
     parser.add_argument(
         "--vsf-decoder",
-        default="ffmpeg",
+        default="opencv",
         choices=["ffmpeg", "opencv"],
-        help="VideoSubFinder video decoder. Batch mode defaults to ffmpeg to avoid OpenCV zero-size-frame popups.",
+        help="VideoSubFinder video decoder. Batch mode defaults to opencv after compatibility transcoding, then falls back to ffmpeg.",
     )
     parser.add_argument(
         "--no-vsf-transcode",

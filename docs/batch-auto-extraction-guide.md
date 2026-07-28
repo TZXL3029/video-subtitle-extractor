@@ -132,12 +132,15 @@ python scripts/batch_auto_extract.py D:/videos --force-srt
 # 提高自动 ROI 置信度阈值
 python scripts/batch_auto_extract.py D:/videos --min-confidence 0.65
 
+# 默认先转码，再用 OpenCV 调用 VideoSubFinder；如需直接从 FFmpeg 开始
+python scripts/batch_auto_extract.py D:/videos --vsf-decoder ffmpeg
+
 # 禁用 VideoSubFinder 前的兼容转码，用于对比排查
 python scripts/batch_auto_extract.py D:/videos --no-vsf-transcode
 ```
 
 脚本会在每个视频旁边生成 `*.subtitle_area.json`，并在高置信度时继续调用 `SubtitleExtractor(scan_strategy="vsf")` 生成同名 `.srt`。
-批处理默认会在项目 `output/<视频名>/vsf_input.mp4` 生成一个临时 H.264/yuv420p 兼容副本，供 VideoSubFinder 和后续 OCR 取帧使用；最终 `.srt` 仍输出到原视频旁边。
+批处理默认会在项目 `output/<视频名>/vsf_input.mp4` 生成一个临时 H.264/yuv420p 兼容副本，供 VideoSubFinder 和后续 OCR 取帧使用；VideoSubFinder 默认先用 OpenCV 解码，失败且未产出结果时自动重试 FFmpeg；最终 `.srt` 仍输出到原视频旁边。
 
 ## 需要的小改造
 
