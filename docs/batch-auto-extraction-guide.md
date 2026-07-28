@@ -53,7 +53,7 @@
 → 调用 SubtitleDetect().detect_subtitle(frame)
 → 收集文本检测框
 → 过滤明显非字幕文本
-→ 按 y 轴聚类
+→ 按 y 轴生成横向候选，按 x 轴生成竖向候选
 → 选择最像字幕的候选区域
 → 加 padding 得到最终 ROI
 → 返回 ROI、confidence 和诊断信息
@@ -70,12 +70,15 @@ ROI 识别目标是“覆盖字幕区域且尽量减少误判”，不需要精�
 
 字幕候选打分可考虑：
 
+- 候选方向：`horizontal` 或 `vertical`。
 - y 坐标稳定性。
+- x 坐标稳定性，用于竖向字幕候选。
 - 出现次数。
 - 跨时间分布。
 - 时域覆盖率 TPR（Temporal Presence Rate）：`frame_hits / sampled_frames`。
 - 横向居中程度。
 - 宽度是否合理。
+- 竖向候选是否窄而高、是否位于画面左右侧。
 - 是否避开角落水印/台标。
 - 是否不像片头标题或场景文字。
 
@@ -247,6 +250,7 @@ video.srt
       "hits": 212,
       "frame_hits": 212,
       "time_bucket_hits": 8,
+      "orientation": "horizontal",
       "temporal_presence_rate": 0.3533,
       "temporal_presence_score": 1.0,
       "temporal_presence_label": "primary_subtitle",

@@ -28,6 +28,7 @@ class SubtitleAreaCandidate:
     hits: int
     frame_hits: int
     time_bucket_hits: int
+    orientation: str = "horizontal"
     temporal_presence_rate: float = 0.0
     temporal_presence_score: float = 0.0
     temporal_presence_label: str = "unknown"
@@ -42,6 +43,7 @@ class SubtitleAreaCandidate:
             "hits": self.hits,
             "frame_hits": self.frame_hits,
             "time_bucket_hits": self.time_bucket_hits,
+            "orientation": self.orientation,
             "temporal_presence_rate": round(self.temporal_presence_rate, 4),
             "temporal_presence_score": round(self.temporal_presence_score, 4),
             "temporal_presence_label": self.temporal_presence_label,
@@ -84,7 +86,7 @@ class AutoSubtitleAreaResult:
         for index, candidate in enumerate(self.candidates):
             if candidate.excluded or candidate.score < min_confidence:
                 continue
-            xmin, xmax, ymin, ymax = _pad_roi(candidate.roi, self.width, self.height)
+            xmin, xmax, ymin, ymax = _pad_roi(candidate.roi, self.width, self.height, candidate.orientation)
             yield index, candidate, SubtitleArea(ymin, ymax, xmin, xmax)
             emitted += 1
             if max_candidates is not None and emitted >= max_candidates:
@@ -140,6 +142,7 @@ class AutoSubtitleAreaResult:
                     hits=int(candidate_data.get("hits", 0)),
                     frame_hits=int(candidate_data.get("frame_hits", 0)),
                     time_bucket_hits=int(candidate_data.get("time_bucket_hits", 0)),
+                    orientation=str(candidate_data.get("orientation", "horizontal")),
                     temporal_presence_rate=float(candidate_data.get("temporal_presence_rate", 0)),
                     temporal_presence_score=float(candidate_data.get("temporal_presence_score", 0)),
                     temporal_presence_label=str(candidate_data.get("temporal_presence_label", "unknown")),
@@ -274,7 +277,7 @@ def detect_auto_subtitle_area(
         )
 
     best = eligible_candidates[0]
-    padded_roi = _pad_roi(best.roi, width, height)
+    padded_roi = _pad_roi(best.roi, width, height, best.orientation)
     status = "ok" if best.score >= min_confidence else "low_confidence"
     reason = "" if status == "ok" else "best subtitle band confidence below threshold"
     return AutoSubtitleAreaResult(
@@ -415,13 +418,16 @@ def _filter_coordinates(coordinates: Iterable[Coordinate], width: int, height: i
 
         if width_ratio < 0.02 or height_ratio < 0.008:
             continue
-        if height_ratio > 0.18 or width_ratio > 0.96:
+        if width_ratio > 0.96:
+            continue
+        if height_ratio > 0.18 and width_ratio > 0.30:
             continue
         # 过滤常见角落水印、台标、计时器。
         in_side_corner = center_x < width * 0.18 or center_x > width * 0.82
-        if in_side_corner and width_ratio < 0.20:
+        in_top_or_bottom = center_y < height * 0.25 or center_y > height * 0.90
+        if in_side_corner and in_top_or_bottom and width_ratio < 0.12 and height_ratio < 0.018:
             continue
-        if center_y < height * 0.15 and width_ratio < 0.35:
+        if center_y < height * 0.15 and not in_side_corner and width_ratio < 0.35:
             continue
         yield (xmin, xmax, ymin, ymax)
 
@@ -435,25 +441,42 @@ def _build_candidates(
     if not observations:
         return []
 
-    tolerance = max(36, int(height * 0.08))
-    sorted_observations = sorted(observations, key=lambda item: _center_y(item["coordinate"]))
+    horizontal_tolerance = max(36, int(height * 0.08))
+    vertical_tolerance = max(28, int(width * 0.06))
+    horizontal_clusters = _cluster_observations_by_axis(observations, "y", horizontal_tolerance)
+    vertical_clusters = _cluster_observations_by_axis(observations, "x", vertical_tolerance)
+
+    candidates = [
+        _score_horizontal_cluster(cluster, width, height, sampled_frame_count, horizontal_tolerance)
+        for cluster in horizontal_clusters
+    ]
+    candidates.extend(
+        _score_vertical_cluster(cluster, width, height, sampled_frame_count, vertical_tolerance)
+        for cluster in vertical_clusters
+    )
+    return sorted(candidates, key=lambda candidate: (candidate.excluded, -candidate.score))
+
+
+def _cluster_observations_by_axis(
+    observations: Sequence[Dict[str, Any]], axis: str, tolerance: int
+) -> List[List[Dict[str, Any]]]:
+    center_fn = _center_y if axis == "y" else _center_x
+    sorted_observations = sorted(observations, key=lambda item: center_fn(item["coordinate"]))
     clusters: List[List[Dict[str, Any]]] = []
     for observation in sorted_observations:
         if not clusters:
             clusters.append([observation])
             continue
-        current_center = _center_y(observation["coordinate"])
-        cluster_center = mean(_center_y(item["coordinate"]) for item in clusters[-1])
+        current_center = center_fn(observation["coordinate"])
+        cluster_center = mean(center_fn(item["coordinate"]) for item in clusters[-1])
         if abs(current_center - cluster_center) <= tolerance:
             clusters[-1].append(observation)
         else:
             clusters.append([observation])
-
-    candidates = [_score_cluster(cluster, width, height, sampled_frame_count, tolerance) for cluster in clusters]
-    return sorted(candidates, key=lambda candidate: (candidate.excluded, -candidate.score))
+    return clusters
 
 
-def _score_cluster(
+def _score_horizontal_cluster(
     cluster: Sequence[Dict[str, Any]],
     width: int,
     height: int,
@@ -496,6 +519,59 @@ def _score_cluster(
         hits=len(cluster),
         frame_hits=frame_hits,
         time_bucket_hits=bucket_hits,
+        orientation="horizontal",
+        temporal_presence_rate=temporal_presence_rate,
+        temporal_presence_score=temporal_presence_score,
+        temporal_presence_label=temporal_presence_label,
+        excluded=excluded,
+        exclusion_reason=exclusion_reason,
+    )
+
+
+def _score_vertical_cluster(
+    cluster: Sequence[Dict[str, Any]],
+    width: int,
+    height: int,
+    sampled_frame_count: int,
+    tolerance: int,
+) -> SubtitleAreaCandidate:
+    coordinates = [item["coordinate"] for item in cluster]
+    xmin = min(coord[0] for coord in coordinates)
+    xmax = max(coord[1] for coord in coordinates)
+    ymin = min(coord[2] for coord in coordinates)
+    ymax = max(coord[3] for coord in coordinates)
+    frame_hits = len({item["frame_no"] for item in cluster})
+    bucket_hits = len({item["bucket"] for item in cluster})
+    temporal_presence_rate = frame_hits / max(sampled_frame_count, 1)
+    temporal_presence_score, temporal_presence_label, excluded, exclusion_reason = _score_temporal_presence(
+        temporal_presence_rate
+    )
+    centers_x = [_center_x(coord) for coord in coordinates]
+    center_x = (xmin + xmax) / 2
+    width_ratio = (xmax - xmin) / width
+    height_ratio = (ymax - ymin) / height
+    side_score = 1.0 if center_x <= width * 0.28 or center_x >= width * 0.72 else 0.62
+    stability_score = 1 - min((pstdev(centers_x) if len(centers_x) > 1 else 0) / max(tolerance, 1), 1)
+    hit_score = min(frame_hits / max(5, sampled_frame_count * 0.12), 1)
+    temporal_score = min(bucket_hits / 6, 1)
+    narrow_score = _piecewise_vertical_width_score(width_ratio)
+    height_score = _piecewise_height_score(height_ratio)
+    score = (
+        hit_score * 0.20
+        + temporal_score * 0.14
+        + temporal_presence_score * 0.20
+        + stability_score * 0.16
+        + side_score * 0.12
+        + narrow_score * 0.08
+        + height_score * 0.10
+    )
+    return SubtitleAreaCandidate(
+        roi=(xmin, xmax, ymin, ymax),
+        score=max(0, min(score, 1)),
+        hits=len(cluster),
+        frame_hits=frame_hits,
+        time_bucket_hits=bucket_hits,
+        orientation="vertical",
         temporal_presence_rate=temporal_presence_rate,
         temporal_presence_score=temporal_presence_score,
         temporal_presence_label=temporal_presence_label,
@@ -527,16 +603,43 @@ def _piecewise_width_score(width_ratio: float) -> float:
     return 0.35
 
 
-def _pad_roi(roi: Coordinate, width: int, height: int) -> Coordinate:
+def _piecewise_vertical_width_score(width_ratio: float) -> float:
+    if 0.03 <= width_ratio <= 0.22:
+        return 1
+    if 0.22 < width_ratio <= 0.35:
+        return 0.70
+    if 0.015 <= width_ratio < 0.03:
+        return 0.65
+    return 0.35
+
+
+def _piecewise_height_score(height_ratio: float) -> float:
+    if 0.28 <= height_ratio <= 0.95:
+        return 1
+    if 0.16 <= height_ratio < 0.28:
+        return 0.72
+    if 0.95 < height_ratio <= 1.0:
+        return 0.65
+    return 0.35
+
+
+def _pad_roi(roi: Coordinate, width: int, height: int, orientation: str = "horizontal") -> Coordinate:
     xmin, xmax, ymin, ymax = roi
-    x_pad = max(16, int(width * 0.07))
-    y_pad = min(80, max(30, int(height * 0.05)))
+    if orientation == "vertical":
+        x_pad = max(12, int(width * 0.025))
+        y_pad = min(100, max(40, int(height * 0.06)))
+    else:
+        x_pad = max(16, int(width * 0.07))
+        y_pad = min(80, max(30, int(height * 0.05)))
     xmin = max(0, xmin - x_pad)
     xmax = min(width, xmax + x_pad)
     ymin = max(0, ymin - y_pad)
     ymax = min(height, ymax + y_pad)
 
-    min_height = min(height, max(80, int(height * 0.10)))
+    if orientation == "vertical":
+        min_height = min(height, max(140, int(height * 0.25)))
+    else:
+        min_height = min(height, max(80, int(height * 0.10)))
     if ymax - ymin < min_height:
         extra = min_height - (ymax - ymin)
         ymin = max(0, ymin - math.ceil(extra / 2))
@@ -551,6 +654,10 @@ def _pad_roi(roi: Coordinate, width: int, height: int) -> Coordinate:
 
 def _center_y(coordinate: Coordinate) -> float:
     return (coordinate[2] + coordinate[3]) / 2
+
+
+def _center_x(coordinate: Coordinate) -> float:
+    return (coordinate[0] + coordinate[1]) / 2
 
 
 __all__ = [
