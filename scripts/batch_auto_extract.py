@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Iterable, List, Sequence
 
 os.environ.setdefault("OPENCV_FFMPEG_LOGLEVEL", "-8")
+os.environ.setdefault("PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK", "True")
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
@@ -155,7 +156,7 @@ def process_video(video_path: Path, args: argparse.Namespace) -> str:
                 vsf_input_video_path=shared_vsf_input_path,
             )
 
-        extractor = run_subtitle_extractor(
+        extractor = run_subtitle_extractor_with_fallback(
             video_path,
             subtitle_area,
             args,
@@ -269,7 +270,7 @@ def extract_and_select_candidate_srt(
                 candidate.temporal_presence_label,
             )
             try:
-                extractor = run_subtitle_extractor(
+                extractor = run_subtitle_extractor_with_fallback(
                     video_path,
                     subtitle_area,
                     args,
@@ -277,8 +278,9 @@ def extract_and_select_candidate_srt(
                     temp_output_dir=candidate_work_dir,
                     vsf_input_video_path=vsf_input_video_path,
                 )
-            except Exception:
-                logging.exception("ROI candidate extraction failed: %s candidate=%s", video_path, ordinal)
+            except Exception as exc:
+                logging.warning("ROI candidate extraction failed: %s candidate=%s error=%s", video_path, ordinal, exc)
+                logging.debug("ROI candidate extraction traceback", exc_info=True)
                 continue
 
             text = read_srt_text(candidate_srt)
@@ -337,6 +339,40 @@ def extract_and_select_candidate_srt(
         shutil.rmtree(candidate_root, ignore_errors=True)
 
 
+def run_subtitle_extractor_with_fallback(
+    video_path: Path,
+    subtitle_area,
+    args: argparse.Namespace,
+    *,
+    subtitle_output_path: Path,
+    temp_output_dir: Path | None = None,
+    vsf_input_video_path: Path | None = None,
+):
+    try:
+        return run_subtitle_extractor(
+            video_path,
+            subtitle_area,
+            args,
+            subtitle_output_path=subtitle_output_path,
+            temp_output_dir=temp_output_dir,
+            vsf_input_video_path=vsf_input_video_path,
+            scan_strategy="vsf",
+        )
+    except RuntimeError as exc:
+        if "VideoSubFinder failed" not in str(exc):
+            raise
+        logging.warning("VideoSubFinder failed, retrying with frame_det: %s", exc)
+        return run_subtitle_extractor(
+            video_path,
+            subtitle_area,
+            args,
+            subtitle_output_path=subtitle_output_path,
+            temp_output_dir=temp_output_dir,
+            vsf_input_video_path=None,
+            scan_strategy="frame_det",
+        )
+
+
 def run_subtitle_extractor(
     video_path: Path,
     subtitle_area,
@@ -345,6 +381,7 @@ def run_subtitle_extractor(
     subtitle_output_path: Path,
     temp_output_dir: Path | None = None,
     vsf_input_video_path: Path | None = None,
+    scan_strategy: str = "vsf",
 ):
     from backend.main import SubtitleExtractor
     from backend.config import config
@@ -358,9 +395,9 @@ def run_subtitle_extractor(
     if vsf_input_video_path is not None:
         extractor.vsf_input_video_path = str(vsf_input_video_path)
     extractor.sub_area = subtitle_area
-    extractor.scan_strategy = "vsf"
+    extractor.scan_strategy = scan_strategy
     extractor.vsf_decoder = VideoSubFinderDecoder.FFMPEG if args.vsf_decoder == "ffmpeg" else VideoSubFinderDecoder.OPENCV
-    extractor.transcode_before_vsf = not args.no_vsf_transcode and vsf_input_video_path is None
+    extractor.transcode_before_vsf = scan_strategy == "vsf" and not args.no_vsf_transcode and vsf_input_video_path is None
     extractor.run()
     return extractor
 

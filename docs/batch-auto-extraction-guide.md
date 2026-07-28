@@ -21,7 +21,7 @@
 → 每个视频自动识别字幕区域 ROI
 → 保存 ROI JSON
 → 转码为 VideoSubFinder/OpenCV 兼容 MP4 副本
-→ 使用 ROI 调用现有 VideoSubFinder 流程
+→ 使用 ROI 调用现有 VideoSubFinder 流程，必要时回退到 frame_det
 → 复用现有 OCR 和 SRT 生成逻辑
 → 输出每个视频的 .srt
 ```
@@ -109,7 +109,8 @@ ROI 应适当放宽：
 → 低置信度视频记录 warning 或跳过
 → 创建 SubtitleExtractor
 → 设置 sub_area 为自动 ROI
-→ 强制使用 VideoSubFinder 扫描策略
+→ 优先使用 VideoSubFinder 扫描策略
+→ VideoSubFinder 无产出时回退到 frame_det
 → 生成 SRT
 → 记录成功、失败和输出路径
 ```
@@ -161,7 +162,7 @@ python scripts/batch_auto_extract.py D:/videos --no-vsf-transcode
 
 脚本会在每个视频旁边生成 `*.subtitle_area.json`，并在高置信度时继续调用 `SubtitleExtractor(scan_strategy="vsf")` 生成同名 `.srt`。
 如果传入 `-o/--output`，`*.subtitle_area.json` 和最终 `.srt` 会写入指定输出目录；未传入时仍写在原视频旁边。
-批处理默认会在 ROI 识别结束后，在项目 `output/<视频名>_vsf_input/vsf_input.mp4` 生成一个临时 H.264/yuv420p 兼容副本，供后续所有 VideoSubFinder 候选和 OCR 取帧共用；VideoSubFinder 默认先用 OpenCV 解码，失败且未产出结果时自动重试 FFmpeg；最终 `.srt` 输出到原视频旁边或 `-o/--output` 指定目录。
+批处理默认会在 ROI 识别结束后，在项目 `output/<视频名>_vsf_input/vsf_input.mp4` 生成一个临时 H.264/yuv420p 兼容副本，供后续所有 VideoSubFinder 候选和 OCR 取帧共用；VideoSubFinder 默认先用 OpenCV 解码，失败且未产出结果时自动重试 FFmpeg；如果两个解码器仍失败，会保底改用 `frame_det` 扫描当前 ROI；最终 `.srt` 输出到原视频旁边或 `-o/--output` 指定目录。
 当多个 ROI 候选同时达到置信度阈值时，批处理会为每个候选生成临时 SRT，提取文本后和标准招式字库做快速子串匹配；最终只复制匹配得分最高的 SRT 到目标输出位置，共享转码副本和其他候选临时结果会被删除。
 
 ## 需要的小改造
@@ -188,7 +189,7 @@ scan_strategy == "frame_det" → extract_frame_by_det()
 scan_strategy is None → 保持当前自动选择逻辑
 ```
 
-这样 GUI 原有行为保持不变，批处理脚本可以明确走 `自动 ROI + VideoSubFinder`。
+这样 GUI 原有行为保持不变，批处理脚本可以明确优先走 `自动 ROI + VideoSubFinder`，并在 VideoSubFinder 无产出时回退到 `frame_det`。
 
 ## 最大复用边界
 

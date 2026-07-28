@@ -16,6 +16,7 @@ from threading import Thread
 from pathlib import Path
 
 os.environ.setdefault("OPENCV_FFMPEG_LOGLEVEL", "-8")
+os.environ.setdefault("PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK", "True")
 
 import cv2
 from Levenshtein import ratio
@@ -137,94 +138,116 @@ class SubtitleExtractor:
         """
         # 记录开始运行的时间
         start_time = time.time()
+        subtitle_ocr_process = None
+        completed = False
         self.lock.acquire()
-        # 重置进度条
-        self.update_progress(ocr=0, frame_extract=0, post=0)
-        self.append_output('-----------------------------')
-        # 打印识别语言与识别模式
-        self.append_output(f"  {tr['Main']['RecSubLang']}：{config.language.value}  |  {tr['Main']['RecMode']}：{config.mode.value}")
-        # 如果使用GPU加速，则打印GPU加速提示
-        if self.hardware_accelerator.has_accelerator():
-            self.append_output(f"  {tr['Main']['AcceleratorON'].format(self.hardware_accelerator.accelerator_name)}")
+        try:
+            # 重置进度条
+            self.update_progress(ocr=0, frame_extract=0, post=0)
+            self.append_output('-----------------------------')
+            # 打印识别语言与识别模式
+            self.append_output(f"  {tr['Main']['RecSubLang']}：{config.language.value}  |  {tr['Main']['RecMode']}：{config.mode.value}")
+            # 如果使用GPU加速，则打印GPU加速提示
+            if self.hardware_accelerator.has_accelerator():
+                self.append_output(f"  {tr['Main']['AcceleratorON'].format(self.hardware_accelerator.accelerator_name)}")
 
-        # 打印视频帧数与帧率
-        self.append_output(f"  {tr['Main']['FrameCount']}：{self.frame_count}"
-              f"  |  {tr['Main']['FrameRate']}：{self.fps}")
-        # 打印加载模型信息
-        self.append_output(f"  DET: {os.path.basename(self.model_config.DET_MODEL_PATH)}  |  REC: {os.path.basename(self.model_config.REC_MODEL_PATH)}")
-        self.append_output('-----------------------------')
-        # 打印视频帧提取开始提示
-        self.append_output(tr['Main']['StartProcessFrame'])
-        # 删除缓存
-        self.__delete_frame_cache()
-        # 若目录不存在，则创建文件夹
-        if not os.path.exists(self.frame_output_dir):
-            os.makedirs(self.frame_output_dir)
-        if not os.path.exists(self.subtitle_output_dir):
-            os.makedirs(self.subtitle_output_dir)
-        self.capture_frame_with_subtitle_area()
-        scan_strategy = self._select_scan_strategy()
-        ocr_video_path = self.video_path
-        if scan_strategy == 'vsf':
-            ocr_video_path = self._prepare_vsf_input_video()
-        # 创建一个字幕OCR识别进程
-        subtitle_ocr_process = self.start_subtitle_ocr_async(ocr_video_path)
-        if scan_strategy == 'vsf':
-            self.extract_frame_by_vsf()
-        elif scan_strategy == 'frame_det':
-            self.extract_frame_by_det()
-        else:
-            self.extract_frame_by_fps()
+            # 打印视频帧数与帧率
+            self.append_output(f"  {tr['Main']['FrameCount']}：{self.frame_count}"
+                  f"  |  {tr['Main']['FrameRate']}：{self.fps}")
+            # 打印加载模型信息
+            self.append_output(f"  DET: {os.path.basename(self.model_config.DET_MODEL_PATH)}  |  REC: {os.path.basename(self.model_config.REC_MODEL_PATH)}")
+            self.append_output('-----------------------------')
+            # 打印视频帧提取开始提示
+            self.append_output(tr['Main']['StartProcessFrame'])
+            # 删除缓存
+            self.__delete_frame_cache()
+            # 若目录不存在，则创建文件夹
+            if not os.path.exists(self.frame_output_dir):
+                os.makedirs(self.frame_output_dir)
+            if not os.path.exists(self.subtitle_output_dir):
+                os.makedirs(self.subtitle_output_dir)
+            self.capture_frame_with_subtitle_area()
+            scan_strategy = self._select_scan_strategy()
+            ocr_video_path = self.video_path
+            if scan_strategy == 'vsf':
+                ocr_video_path = self._prepare_vsf_input_video()
+            # 创建一个字幕OCR识别进程
+            subtitle_ocr_process = self.start_subtitle_ocr_async(ocr_video_path)
+            try:
+                if scan_strategy == 'vsf':
+                    self.extract_frame_by_vsf()
+                elif scan_strategy == 'frame_det':
+                    self.extract_frame_by_det()
+                else:
+                    self.extract_frame_by_fps()
+            except Exception:
+                self._finish_subtitle_ocr_process(subtitle_ocr_process, timeout=10, terminate_on_timeout=True)
+                raise
+            self._finish_subtitle_ocr_process(subtitle_ocr_process)
+            # 打印完成提示
+            self.append_output(tr['Main']['FinishProcessFrame'])
+            self.append_output(tr['Main']['FinishFindSub'])
 
-        # 往字幕OCR任务队列中，添加OCR识别任务结束标志
-        # 任务格式为：(total_frame_count总帧数, current_frame_no当前帧, dt_box检测框, rec_res识别结果, 当前帧时间， subtitle_area字幕区域)
-        self.subtitle_ocr_task_queue.put((self.frame_count, -1, None, None, None, None))
-        # 等待子线程完成
-        subtitle_ocr_process.join()
-        # 打印完成提示
-        self.append_output(tr['Main']['FinishProcessFrame'])
-        self.append_output(tr['Main']['FinishFindSub'])
+            if self.sub_area is None:
+                self.append_output(tr['Main']['StartDetectWaterMark'])
+                # 询问用户视频是否有水印区域
+                user_input = input(tr['Main']['checkWaterMark']).strip()
+                if user_input == 'y':
+                    self.filter_watermark()
+                    self.append_output(tr['Main']['FinishDetectWaterMark'])
+                else:
+                    self.append_output('-----------------------------')
 
-        if self.sub_area is None:
-            self.append_output(tr['Main']['StartDetectWaterMark'])
-            # 询问用户视频是否有水印区域
-            user_input = input(tr['Main']['checkWaterMark']).strip()
-            if user_input == 'y':
-                self.filter_watermark()
-                self.append_output(tr['Main']['FinishDetectWaterMark'])
+            if self.sub_area is None:
+                self.append_output(tr['Main']['StartDeleteNonSub'])
+                self.filter_scene_text()
+                self.append_output(tr['Main']['FinishDeleteNonSub'])
+
+            self.update_progress(post=20)
+
+            # 打印开始字幕生成提示
+            self.append_output(tr['Main']['StartGenerateSub'])
+            # 判断是否使用了vsf提取字幕
+            if self.use_vsf:
+                # 如果使用了vsf提取字幕，则使用vsf的字幕生成方法
+                self.generate_subtitle_file_vsf()
             else:
-                self.append_output('-----------------------------')
+                # 如果未使用vsf提取字幕，则使用常规字幕生成方法
+                self.generate_subtitle_file()
 
-        if self.sub_area is None:
-            self.append_output(tr['Main']['StartDeleteNonSub'])
-            self.filter_scene_text()
-            self.append_output(tr['Main']['FinishDeleteNonSub'])
+            self.update_progress(post=90)
 
-        self.update_progress(post=20)
-
-        # 打印开始字幕生成提示
-        self.append_output(tr['Main']['StartGenerateSub'])
-        # 判断是否使用了vsf提取字幕
-        if self.use_vsf:
-            # 如果使用了vsf提取字幕，则使用vsf的字幕生成方法
-            self.generate_subtitle_file_vsf()
-        else:
-            # 如果未使用vsf提取字幕，则使用常规字幕生成方法
-            self.generate_subtitle_file()
-
-        self.update_progress(post=90)
-
-        if config.wordSegmentation.value:
-            reformat.execute(self.subtitle_output_path, config.language.value)
-        self.append_output(tr['Main']['FinishGenerateSub'], f"{round(time.time() - start_time, 2)}s")
-        self.append_output('-----------------------------')
-        self.update_progress(ocr=100, frame_extract=100, post=100)
-        self.isFinished = True
-        # 删除缓存文件
-        self.empty_cache()
-        self.lock.release()
-        if config.generateTxt.value:
+            if config.wordSegmentation.value:
+                reformat.execute(self.subtitle_output_path, config.language.value)
+            self.append_output(tr['Main']['FinishGenerateSub'], f"{round(time.time() - start_time, 2)}s")
+            self.append_output('-----------------------------')
+            self.update_progress(ocr=100, frame_extract=100, post=100)
+            completed = True
+        finally:
+            self.isFinished = True
+            self.vsf_running = False
+            if subtitle_ocr_process is not None and subtitle_ocr_process.is_alive():
+                self._finish_subtitle_ocr_process(subtitle_ocr_process, timeout=3, terminate_on_timeout=True)
+            # 删除缓存文件
+            self.empty_cache()
+            self.lock.release()
+        if completed and config.generateTxt.value:
             self.srt2txt(self.subtitle_output_path)
+
+    def _finish_subtitle_ocr_process(self, process, timeout=None, terminate_on_timeout=False):
+        if self.subtitle_ocr_task_queue is not None:
+            try:
+                # 任务格式为：(total_frame_count总帧数, current_frame_no当前帧, dt_box检测框,
+                # rec_res识别结果, 当前帧时间， subtitle_area字幕区域)
+                self.subtitle_ocr_task_queue.put((self.frame_count, -1, None, None, None, None))
+            except Exception:
+                pass
+        if process is None:
+            return
+        process.join(timeout=timeout)
+        if terminate_on_timeout and process.is_alive():
+            process.terminate()
+            process.join(timeout=3)
 
     def _select_scan_strategy(self):
         """
