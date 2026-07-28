@@ -9,6 +9,7 @@ import json
 import logging
 import multiprocessing
 import os
+import shutil
 import sys
 from pathlib import Path
 from typing import Iterable, List, Sequence
@@ -35,6 +36,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--ocr-drop-score", type=int, default=70, help="Discard OCR text below this confidence percentage.")
     parser.add_argument("--no-roi-progress", action="store_true", help="Hide ROI frame sampling progress bars.")
     parser.add_argument(
+        "--label-config-dir",
+        default="D:/autoCut/autocut/label_configs",
+        help="Directory containing standard action label JSON files for multi-ROI candidate text matching.",
+    )
+    parser.add_argument(
         "--vsf-decoder",
         default="opencv",
         choices=["ffmpeg", "opencv"],
@@ -59,6 +65,7 @@ def main() -> int:
     if not video_paths:
         logging.error("No video files found.")
         return 2
+    args.label_matcher = load_label_matcher(args.label_config_dir)
 
     summary = {"total": len(video_paths), "success": 0, "skipped": 0, "failed": 0, "low_confidence": 0}
     for video_path in video_paths:
@@ -109,26 +116,20 @@ def process_video(video_path: Path, args: argparse.Namespace) -> str:
         logging.exception("ROI detection failed: %s", video_path)
         return "failed"
 
-    subtitle_area = result.to_subtitle_area()
     if result.status == "error":
         logging.error("ROI detection error: %s reason=%s", video_path, result.reason)
         return "failed"
+    candidate_entries = list(result.iter_candidate_subtitle_areas(min_confidence=args.min_confidence))
+    subtitle_area = candidate_entries[0][2] if candidate_entries else result.to_subtitle_area()
     if result.status != "ok" or subtitle_area is None or result.confidence < args.min_confidence:
         logging.warning("Low-confidence ROI skipped: %s confidence=%.4f reason=%s", video_path, result.confidence, result.reason)
         return "low_confidence"
 
     try:
-        from backend.main import SubtitleExtractor
-        from backend.config import config
-        from backend.tools.constant import VideoSubFinderDecoder
+        if len(candidate_entries) > 1 and args.label_matcher and args.label_matcher.terms:
+            return extract_and_select_candidate_srt(video_path, roi_path, result, candidate_entries, args)
 
-        config.dropScore.value = args.ocr_drop_score
-        extractor = SubtitleExtractor(str(video_path))
-        extractor.sub_area = subtitle_area
-        extractor.scan_strategy = "vsf"
-        extractor.vsf_decoder = VideoSubFinderDecoder.FFMPEG if args.vsf_decoder == "ffmpeg" else VideoSubFinderDecoder.OPENCV
-        extractor.transcode_before_vsf = not args.no_vsf_transcode
-        extractor.run()
+        extractor = run_subtitle_extractor(video_path, subtitle_area, args, subtitle_output_path=srt_path)
         logging.info("SRT generated: %s", extractor.subtitle_output_path)
         return "success"
     except Exception:
@@ -160,6 +161,143 @@ def get_or_detect_roi(video_path: Path, roi_path: Path, args: argparse.Namespace
 
 def subtitle_area_json_path(video_path: Path) -> Path:
     return video_path.with_name(f"{video_path.stem}.subtitle_area.json")
+
+
+def load_label_matcher(label_config_dir: str):
+    from backend.tools.label_text_matcher import LabelTextMatcher
+
+    matcher = LabelTextMatcher.from_config_dir(label_config_dir)
+    if matcher.terms:
+        logging.info("Loaded standard action label terms: %s from %s", len(matcher.terms), label_config_dir)
+    else:
+        logging.warning("No standard action label terms loaded from: %s", label_config_dir)
+    return matcher
+
+
+def extract_and_select_candidate_srt(video_path: Path, roi_path: Path, result, candidate_entries, args) -> str:
+    from backend.config import config
+    from backend.tools.auto_subtitle_area import save_result_json
+    from backend.tools.label_text_matcher import read_srt_text
+
+    final_srt_path = video_path.with_suffix(".srt")
+    candidate_root = PROJECT_ROOT / "output" / f"{video_path.stem}_roi_candidates"
+    shutil.rmtree(candidate_root, ignore_errors=True)
+    candidate_root.mkdir(parents=True, exist_ok=True)
+
+    evaluations = []
+    try:
+        for ordinal, (candidate_index, candidate, subtitle_area) in enumerate(candidate_entries, start=1):
+            candidate_srt = candidate_root / f"candidate_{ordinal}.srt"
+            candidate_work_dir = candidate_root / f"work_{ordinal}"
+            logging.info(
+                "Evaluate ROI candidate %s/%s: roi_score=%.4f tpr=%.4f label=%s",
+                ordinal,
+                len(candidate_entries),
+                candidate.score,
+                candidate.temporal_presence_rate,
+                candidate.temporal_presence_label,
+            )
+            try:
+                extractor = run_subtitle_extractor(
+                    video_path,
+                    subtitle_area,
+                    args,
+                    subtitle_output_path=candidate_srt,
+                    temp_output_dir=candidate_work_dir,
+                )
+            except Exception:
+                logging.exception("ROI candidate extraction failed: %s candidate=%s", video_path, ordinal)
+                continue
+
+            text = read_srt_text(candidate_srt)
+            match_result = args.label_matcher.score_text(text)
+            evaluations.append(
+                {
+                    "ordinal": ordinal,
+                    "candidate_index": candidate_index,
+                    "candidate": candidate,
+                    "subtitle_area": subtitle_area,
+                    "srt_path": candidate_srt,
+                    "extractor": extractor,
+                    "text_match": match_result,
+                }
+            )
+            logging.info(
+                "ROI candidate scored: candidate=%s text_score=%.4f matched=%s",
+                ordinal,
+                match_result.score,
+                ", ".join(match_result.matched_terms[:8]) if match_result.matched_terms else "-",
+            )
+
+        if not evaluations:
+            logging.error("All ROI candidate extractions failed: %s", video_path)
+            return "failed"
+
+        best = max(
+            evaluations,
+            key=lambda item: (item["text_match"].score, item["candidate"].score, -item["ordinal"]),
+        )
+        shutil.copy2(best["srt_path"], final_srt_path)
+        if config.generateTxt.value:
+            best["extractor"].srt2txt(str(final_srt_path))
+
+        selected_area = best["subtitle_area"]
+        result.subtitle_roi = (
+            int(selected_area.xmin),
+            int(selected_area.xmax),
+            int(selected_area.ymin),
+            int(selected_area.ymax),
+        )
+        result.confidence = best["candidate"].score
+        result.selected_candidate_index = best["candidate_index"]
+        result.text_match_score = best["text_match"].score
+        save_result_json(result, roi_path)
+
+        logging.info(
+            "Selected ROI candidate: %s text_score=%.4f roi_score=%.4f output=%s",
+            best["ordinal"],
+            best["text_match"].score,
+            best["candidate"].score,
+            final_srt_path,
+        )
+        return "success"
+    finally:
+        shutil.rmtree(candidate_root, ignore_errors=True)
+
+
+def run_subtitle_extractor(
+    video_path: Path,
+    subtitle_area,
+    args: argparse.Namespace,
+    *,
+    subtitle_output_path: Path,
+    temp_output_dir: Path | None = None,
+):
+    from backend.main import SubtitleExtractor
+    from backend.config import config
+    from backend.tools.constant import VideoSubFinderDecoder
+
+    config.dropScore.value = args.ocr_drop_score
+    extractor = SubtitleExtractor(str(video_path))
+    if temp_output_dir is not None:
+        configure_extractor_temp_paths(extractor, temp_output_dir)
+    extractor.subtitle_output_path = str(subtitle_output_path)
+    extractor.sub_area = subtitle_area
+    extractor.scan_strategy = "vsf"
+    extractor.vsf_decoder = VideoSubFinderDecoder.FFMPEG if args.vsf_decoder == "ffmpeg" else VideoSubFinderDecoder.OPENCV
+    extractor.transcode_before_vsf = not args.no_vsf_transcode
+    extractor.run()
+    return extractor
+
+
+def configure_extractor_temp_paths(extractor, temp_output_dir: Path) -> None:
+    temp_output_dir = Path(temp_output_dir)
+    extractor.temp_output_dir = str(temp_output_dir)
+    extractor.frame_output_dir = str(temp_output_dir / "frames")
+    extractor.subtitle_output_dir = str(temp_output_dir / "subtitle")
+    extractor.vsf_subtitle = str(Path(extractor.subtitle_output_dir) / "raw_vsf.srt")
+    extractor.raw_subtitle_path = str(Path(extractor.subtitle_output_dir) / "raw.txt")
+    extractor.vsf_input_video_path = extractor.video_path
 
 
 def write_error_roi(video_path: Path, roi_path: Path, exc: Exception) -> None:

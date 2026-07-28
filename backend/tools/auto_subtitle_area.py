@@ -66,6 +66,8 @@ class AutoSubtitleAreaResult:
     reason: str = ""
     candidates: List[SubtitleAreaCandidate] = field(default_factory=list)
     method_version: str = METHOD_VERSION
+    selected_candidate_index: Optional[int] = None
+    text_match_score: Optional[float] = None
 
     def to_subtitle_area(self):
         if self.subtitle_roi is None:
@@ -74,6 +76,19 @@ class AutoSubtitleAreaResult:
 
         xmin, xmax, ymin, ymax = self.subtitle_roi
         return SubtitleArea(ymin, ymax, xmin, xmax)
+
+    def iter_candidate_subtitle_areas(self, min_confidence: float = 0.0, max_candidates: Optional[int] = None):
+        from backend.bean.subtitle_area import SubtitleArea
+
+        emitted = 0
+        for index, candidate in enumerate(self.candidates):
+            if candidate.excluded or candidate.score < min_confidence:
+                continue
+            xmin, xmax, ymin, ymax = _pad_roi(candidate.roi, self.width, self.height)
+            yield index, candidate, SubtitleArea(ymin, ymax, xmin, xmax)
+            emitted += 1
+            if max_candidates is not None and emitted >= max_candidates:
+                return
 
     def to_json_dict(self) -> Dict[str, Any]:
         data: Dict[str, Any] = {
@@ -88,6 +103,10 @@ class AutoSubtitleAreaResult:
             "status": self.status,
             "candidates": [candidate.to_json_dict() for candidate in self.candidates],
         }
+        if self.selected_candidate_index is not None:
+            data["selected_candidate_index"] = self.selected_candidate_index
+        if self.text_match_score is not None:
+            data["text_match_score"] = round(self.text_match_score, 4)
         if self.subtitle_roi is not None:
             xmin, xmax, ymin, ymax = self.subtitle_roi
             data["subtitle_roi"] = {"xmin": xmin, "xmax": xmax, "ymin": ymin, "ymax": ymax}
@@ -141,6 +160,10 @@ class AutoSubtitleAreaResult:
             reason=str(data.get("reason", "")),
             candidates=candidates,
             method_version=str(data.get("method_version", METHOD_VERSION)),
+            selected_candidate_index=(
+                int(data["selected_candidate_index"]) if data.get("selected_candidate_index") is not None else None
+            ),
+            text_match_score=float(data["text_match_score"]) if data.get("text_match_score") is not None else None,
         )
 
 
@@ -266,6 +289,7 @@ def detect_auto_subtitle_area(
         status=status,
         reason=reason,
         candidates=candidates[:5],
+        selected_candidate_index=0,
     )
 
 
@@ -281,11 +305,11 @@ def build_sample_frame_numbers(
     if samples is None:
         duration_seconds = frame_count / fps if fps > 0 else 0
         if duration_seconds and duration_seconds < 5 * 60:
-            samples = 240
+            samples = 60
         elif duration_seconds and duration_seconds < 30 * 60:
-            samples = 600
+            samples = 180
         else:
-            samples = 900
+            samples = 240
 
     sample_count = max(1, min(int(samples), int(max_samples), frame_count))
     if sample_count == 1:

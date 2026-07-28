@@ -221,7 +221,7 @@ python ./backend/main.py
 
 #### 6. 自动批量提取来源较杂的视频
 
-如果批量视频的分辨率、字幕位置不一致，可以使用自动批量提取脚本。脚本会对每个视频自动检测字幕区域 ROI，生成 `*.subtitle_area.json`，高置信度时继续调用 VideoSubFinder + OCR 生成同名 `.srt`。自动 ROI 会统计候选区域的时域覆盖率 TPR，优先选择 TPR 在 20%-75% 的主字幕区域，排除 TPR < 10% 的随机噪声/背景文本；TPR > 75% 的高覆盖候选会保留但降权。批处理默认会先生成兼容转码副本，VideoSubFinder 默认先用 OpenCV 解码，失败且未产出结果时自动重试 FFmpeg。
+如果批量视频的分辨率、字幕位置不一致，可以使用自动批量提取脚本。脚本会对每个视频自动检测字幕区域 ROI，生成 `*.subtitle_area.json`，高置信度时继续调用 VideoSubFinder + OCR 生成同名 `.srt`。自动 ROI 会统计候选区域的时域覆盖率 TPR，优先选择 TPR 在 20%-75% 的主字幕区域，排除 TPR < 10% 的随机噪声/背景文本；TPR > 75% 的高覆盖候选会保留但降权。多个 ROI 候选同时入选时，批处理会分别生成临时字幕，并和 `D:/autoCut/autocut/label_configs` 中的标准招式字库快速比对，只保留得分最高的最终 `.srt`。批处理默认会先生成兼容转码副本，VideoSubFinder 默认先用 OpenCV 解码，失败且未产出结果时自动重试 FFmpeg。
 
 ```shell
 python scripts/batch_auto_extract.py <视频文件或目录>
@@ -250,6 +250,9 @@ python scripts/batch_auto_extract.py D:/videos --min-confidence 0.65
 
 # 控制 ROI 抽样帧数，数值越大越稳但越慢
 python scripts/batch_auto_extract.py D:/videos --samples 600 --max-samples 1000
+
+# 指定标准招式字库目录，用于多个 ROI 候选的字幕文本比对
+python scripts/batch_auto_extract.py D:/videos --label-config-dir D:/autoCut/autocut/label_configs
 ```
 
 输出文件示例：

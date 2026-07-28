@@ -63,9 +63,9 @@ ROI 识别目标是“覆盖字幕区域且尽量减少误判”，不需要精�
 
 建议抽样策略：
 
-- 短视频：抽样 200-300 帧。
-- 中长视频：抽样 400-800 帧。
-- 很长视频：设置上限，例如最多 1000 帧。
+- 短视频（小于 5 分钟）：默认抽样 60 帧。
+- 中长视频（小于 30 分钟）：默认抽样 180 帧。
+- 很长视频（大于等于 30 分钟）：默认抽样 240 帧。
 - 抽样应覆盖全片，可将视频切成多个时间桶，每个桶内抽若干帧。
 
 字幕候选打分可考虑：
@@ -143,12 +143,16 @@ python scripts/batch_auto_extract.py D:/videos --min-confidence 0.65
 # 默认先转码，再用 OpenCV 调用 VideoSubFinder；如需直接从 FFmpeg 开始
 python scripts/batch_auto_extract.py D:/videos --vsf-decoder ffmpeg
 
+# 多个 ROI 候选同时入选时，指定标准招式字库目录用于最终字幕文本比对
+python scripts/batch_auto_extract.py D:/videos --label-config-dir D:/autoCut/autocut/label_configs
+
 # 禁用 VideoSubFinder 前的兼容转码，用于对比排查
 python scripts/batch_auto_extract.py D:/videos --no-vsf-transcode
 ```
 
 脚本会在每个视频旁边生成 `*.subtitle_area.json`，并在高置信度时继续调用 `SubtitleExtractor(scan_strategy="vsf")` 生成同名 `.srt`。
 批处理默认会在项目 `output/<视频名>/vsf_input.mp4` 生成一个临时 H.264/yuv420p 兼容副本，供 VideoSubFinder 和后续 OCR 取帧使用；VideoSubFinder 默认先用 OpenCV 解码，失败且未产出结果时自动重试 FFmpeg；最终 `.srt` 仍输出到原视频旁边。
+当多个 ROI 候选同时达到置信度阈值时，批处理会为每个候选生成临时 SRT，提取文本后和标准招式字库做快速子串匹配；最终只复制匹配得分最高的 SRT 到原视频旁边，其他候选临时结果会被删除。
 
 ## 需要的小改造
 
@@ -219,9 +223,11 @@ video.srt
     "ymax": 980
   },
   "confidence": 0.86,
-  "sampled_frames": 600,
+  "sampled_frames": 180,
   "method_version": "auto-roi-v1",
   "status": "ok",
+  "selected_candidate_index": 0,
+  "text_match_score": 128.0,
   "candidates": [
     {
       "roi": {
