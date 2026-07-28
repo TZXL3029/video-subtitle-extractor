@@ -16,6 +16,11 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 METHOD_VERSION = "auto-roi-v1"
 Coordinate = Tuple[int, int, int, int]  # xmin, xmax, ymin, ymax
 
+TPR_NOISE_MAX = 0.10
+TPR_PRIMARY_MIN = 0.20
+TPR_PRIMARY_MAX = 0.75
+TPR_WATERMARK_MIN = 0.85
+
 
 @dataclass
 class SubtitleAreaCandidate:
@@ -24,16 +29,28 @@ class SubtitleAreaCandidate:
     hits: int
     frame_hits: int
     time_bucket_hits: int
+    temporal_presence_rate: float = 0.0
+    temporal_presence_score: float = 0.0
+    temporal_presence_label: str = "unknown"
+    excluded: bool = False
+    exclusion_reason: str = ""
 
     def to_json_dict(self) -> Dict[str, Any]:
         xmin, xmax, ymin, ymax = self.roi
-        return {
+        data = {
             "roi": {"xmin": xmin, "xmax": xmax, "ymin": ymin, "ymax": ymax},
             "score": round(self.score, 4),
             "hits": self.hits,
             "frame_hits": self.frame_hits,
             "time_bucket_hits": self.time_bucket_hits,
+            "temporal_presence_rate": round(self.temporal_presence_rate, 4),
+            "temporal_presence_score": round(self.temporal_presence_score, 4),
+            "temporal_presence_label": self.temporal_presence_label,
+            "excluded": self.excluded,
         }
+        if self.exclusion_reason:
+            data["exclusion_reason"] = self.exclusion_reason
+        return data
 
 
 @dataclass
@@ -105,6 +122,11 @@ class AutoSubtitleAreaResult:
                     hits=int(candidate_data.get("hits", 0)),
                     frame_hits=int(candidate_data.get("frame_hits", 0)),
                     time_bucket_hits=int(candidate_data.get("time_bucket_hits", 0)),
+                    temporal_presence_rate=float(candidate_data.get("temporal_presence_rate", 0)),
+                    temporal_presence_score=float(candidate_data.get("temporal_presence_score", 0)),
+                    temporal_presence_label=str(candidate_data.get("temporal_presence_label", "unknown")),
+                    excluded=bool(candidate_data.get("excluded", False)),
+                    exclusion_reason=str(candidate_data.get("exclusion_reason", "")),
                 )
             )
         return cls(
@@ -213,7 +235,23 @@ def detect_auto_subtitle_area(
             reason=reason,
         )
 
-    best = candidates[0]
+    eligible_candidates = [candidate for candidate in candidates if not candidate.excluded]
+    if not eligible_candidates:
+        return AutoSubtitleAreaResult(
+            video=video_path.name,
+            width=width,
+            height=height,
+            fps=fps,
+            frame_count=frame_count,
+            subtitle_roi=None,
+            confidence=candidates[0].score,
+            sampled_frames=len(sample_frames),
+            status="low_confidence",
+            reason="all candidate bands were rejected by temporal presence rate (TPR)",
+            candidates=candidates[:5],
+        )
+
+    best = eligible_candidates[0]
     padded_roi = _pad_roi(best.roi, width, height)
     status = "ok" if best.score >= min_confidence else "low_confidence"
     reason = "" if status == "ok" else "best subtitle band confidence below threshold"
@@ -389,7 +427,7 @@ def _build_candidates(
             clusters.append([observation])
 
     candidates = [_score_cluster(cluster, width, height, sampled_frame_count, tolerance) for cluster in clusters]
-    return sorted(candidates, key=lambda candidate: candidate.score, reverse=True)
+    return sorted(candidates, key=lambda candidate: (candidate.excluded, -candidate.score))
 
 
 def _score_cluster(
@@ -406,6 +444,10 @@ def _score_cluster(
     ymax = max(coord[3] for coord in coordinates)
     frame_hits = len({item["frame_no"] for item in cluster})
     bucket_hits = len({item["bucket"] for item in cluster})
+    temporal_presence_rate = frame_hits / max(sampled_frame_count, 1)
+    temporal_presence_score, temporal_presence_label, excluded, exclusion_reason = _score_temporal_presence(
+        temporal_presence_rate
+    )
     centers_y = [_center_y(coord) for coord in coordinates]
     center_x = (xmin + xmax) / 2
     width_ratio = (xmax - xmin) / width
@@ -417,12 +459,13 @@ def _score_cluster(
     y_center = (ymin + ymax) / 2
     y_score = 1.0 if y_center >= height * 0.45 else 0.72
     score = (
-        hit_score * 0.32
-        + temporal_score * 0.22
-        + stability_score * 0.17
-        + center_score * 0.14
-        + width_score * 0.10
-        + y_score * 0.05
+        hit_score * 0.22
+        + temporal_score * 0.16
+        + temporal_presence_score * 0.22
+        + stability_score * 0.16
+        + center_score * 0.12
+        + width_score * 0.08
+        + y_score * 0.04
     )
     return SubtitleAreaCandidate(
         roi=(xmin, xmax, ymin, ymax),
@@ -430,7 +473,27 @@ def _score_cluster(
         hits=len(cluster),
         frame_hits=frame_hits,
         time_bucket_hits=bucket_hits,
+        temporal_presence_rate=temporal_presence_rate,
+        temporal_presence_score=temporal_presence_score,
+        temporal_presence_label=temporal_presence_label,
+        excluded=excluded,
+        exclusion_reason=exclusion_reason,
     )
+
+
+def _score_temporal_presence(tpr: float) -> Tuple[float, str, bool, str]:
+    if tpr < TPR_NOISE_MAX:
+        return 0.0, "random_noise_or_background_text", True, "TPR < 10%"
+    if tpr > TPR_WATERMARK_MIN:
+        return 0.0, "fixed_watermark_or_logo", True, "TPR > 85%"
+    if TPR_PRIMARY_MIN <= tpr <= TPR_PRIMARY_MAX:
+        return 1.0, "primary_subtitle", False, ""
+    if tpr < TPR_PRIMARY_MIN:
+        progress = (tpr - TPR_NOISE_MAX) / max(TPR_PRIMARY_MIN - TPR_NOISE_MAX, 0.001)
+        return 0.35 + max(0.0, min(progress, 1.0)) * 0.40, "low_presence", False, ""
+
+    progress = (tpr - TPR_PRIMARY_MAX) / max(TPR_WATERMARK_MIN - TPR_PRIMARY_MAX, 0.001)
+    return 0.75 - max(0.0, min(progress, 1.0)) * 0.50, "high_presence", False, ""
 
 
 def _piecewise_width_score(width_ratio: float) -> float:

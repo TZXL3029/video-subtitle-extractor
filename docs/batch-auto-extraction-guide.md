@@ -73,10 +73,18 @@ ROI 识别目标是“覆盖字幕区域且尽量减少误判”，不需要精�
 - y 坐标稳定性。
 - 出现次数。
 - 跨时间分布。
+- 时域覆盖率 TPR（Temporal Presence Rate）：`frame_hits / sampled_frames`。
 - 横向居中程度。
 - 宽度是否合理。
 - 是否避开角落水印/台标。
 - 是否不像片头标题或场景文字。
+
+TPR 判定规则：
+
+- `20% <= TPR <= 75%`：合格主字幕 ROI，TPR 得分最高。
+- `TPR > 85%`：判定为固定水印/台标候选，排除。
+- `TPR < 10%`：判定为随机噪声/背景文本候选，排除。
+- `10% <= TPR < 20%` 与 `75% < TPR <= 85%`：作为过渡区间保留候选但降低 TPR 得分。
 
 ROI 应适当放宽：
 
@@ -223,7 +231,13 @@ video.srt
         "ymax": 910
       },
       "score": 0.86,
-      "hits": 212
+      "hits": 212,
+      "frame_hits": 212,
+      "time_bucket_hits": 8,
+      "temporal_presence_rate": 0.3533,
+      "temporal_presence_score": 1.0,
+      "temporal_presence_label": "primary_subtitle",
+      "excluded": false
     }
   ]
 }
