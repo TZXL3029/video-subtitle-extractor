@@ -40,6 +40,11 @@ def parse_args() -> argparse.Namespace:
         choices=["ffmpeg", "opencv"],
         help="VideoSubFinder video decoder. Batch mode defaults to ffmpeg to avoid OpenCV zero-size-frame popups.",
     )
+    parser.add_argument(
+        "--no-vsf-transcode",
+        action="store_true",
+        help="Disable the compatibility transcode before VideoSubFinder.",
+    )
     parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
     return parser.parse_args()
 
@@ -122,6 +127,7 @@ def process_video(video_path: Path, args: argparse.Namespace) -> str:
         extractor.sub_area = subtitle_area
         extractor.scan_strategy = "vsf"
         extractor.vsf_decoder = VideoSubFinderDecoder.FFMPEG if args.vsf_decoder == "ffmpeg" else VideoSubFinderDecoder.OPENCV
+        extractor.transcode_before_vsf = not args.no_vsf_transcode
         extractor.run()
         logging.info("SRT generated: %s", extractor.subtitle_output_path)
         return "success"

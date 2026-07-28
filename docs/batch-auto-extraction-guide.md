@@ -20,6 +20,7 @@
 批量视频
 → 每个视频自动识别字幕区域 ROI
 → 保存 ROI JSON
+→ 转码为 VideoSubFinder/OpenCV 兼容 MP4 副本
 → 使用 ROI 调用现有 VideoSubFinder 流程
 → 复用现有 OCR 和 SRT 生成逻辑
 → 输出每个视频的 .srt
@@ -130,9 +131,13 @@ python scripts/batch_auto_extract.py D:/videos --force-srt
 
 # 提高自动 ROI 置信度阈值
 python scripts/batch_auto_extract.py D:/videos --min-confidence 0.65
+
+# 禁用 VideoSubFinder 前的兼容转码，用于对比排查
+python scripts/batch_auto_extract.py D:/videos --no-vsf-transcode
 ```
 
 脚本会在每个视频旁边生成 `*.subtitle_area.json`，并在高置信度时继续调用 `SubtitleExtractor(scan_strategy="vsf")` 生成同名 `.srt`。
+批处理默认会在项目 `output/<视频名>/vsf_input.mp4` 生成一个临时 H.264/yuv420p 兼容副本，供 VideoSubFinder 和后续 OCR 取帧使用；最终 `.srt` 仍输出到原视频旁边。
 
 ## 需要的小改造
 

@@ -36,6 +36,7 @@ from backend.tools.process_manager import ProcessManager
 from backend.tools.subtitle_detect import SubtitleDetect
 from backend.bean.subtitle_area import SubtitleArea
 from backend.tools.constant import VideoSubFinderDecoder
+from backend.tools.video_transcode import transcode_video_for_vsf
 from backend.tools.video_metadata import read_video_metadata
 import threading
 import platform
@@ -99,6 +100,10 @@ class SubtitleExtractor:
         self.scan_strategy = None
         # 显式 VideoSubFinder 解码器。None 表示使用全局配置。
         self.vsf_decoder = None
+        # 是否在调用 VideoSubFinder 前生成兼容 MP4 副本。批处理脚本会默认启用。
+        self.transcode_before_vsf = False
+        # VideoSubFinder 与 VSF 模式下 OCR 实际读取的视频路径。
+        self.vsf_input_video_path = self.video_path
         # 定义vsf的字幕输出路径
         self.vsf_subtitle = os.path.join(self.subtitle_output_dir, 'raw_vsf.srt')
         # 提取的原始字幕文本存储路径
@@ -159,8 +164,11 @@ class SubtitleExtractor:
             os.makedirs(self.subtitle_output_dir)
         self.capture_frame_with_subtitle_area()
         scan_strategy = self._select_scan_strategy()
+        ocr_video_path = self.video_path
+        if scan_strategy == 'vsf':
+            ocr_video_path = self._prepare_vsf_input_video()
         # 创建一个字幕OCR识别进程
-        subtitle_ocr_process = self.start_subtitle_ocr_async()
+        subtitle_ocr_process = self.start_subtitle_ocr_async(ocr_video_path)
         if scan_strategy == 'vsf':
             self.extract_frame_by_vsf()
         elif scan_strategy == 'frame_det':
@@ -566,12 +574,14 @@ class SubtitleExtractor:
         fallback_decoder = VideoSubFinderDecoder.FFMPEG if selected_decoder == VideoSubFinderDecoder.OPENCV else VideoSubFinderDecoder.OPENCV
         decoders = [selected_decoder, fallback_decoder]
 
+        vsf_input_video_path = self.vsf_input_video_path or self.video_path
+
         def build_vsf_command(decoder):
             if platform.system() == 'Windows':
-                cmd = f"{path_vsf} --use_cuda -c -r -i \"{self.video_path}\" -o \"{self.temp_output_dir}\" -ces \"{self.vsf_subtitle}\" "
+                cmd = f"{path_vsf} --use_cuda -c -r -i \"{vsf_input_video_path}\" -o \"{self.temp_output_dir}\" -ces \"{self.vsf_subtitle}\" "
                 cmd += f"-te {top_end} -be {bottom_end} -le {left_end} -re {right_end} -nthr {cpu_count} -nocrthr {cpu_count} "
             else:
-                cmd = f"{path_vsf} -c -r -i \"{self.video_path}\" -o \"{self.temp_output_dir}\" -ces \"{self.vsf_subtitle}\" "
+                cmd = f"{path_vsf} -c -r -i \"{vsf_input_video_path}\" -o \"{self.temp_output_dir}\" -ces \"{self.vsf_subtitle}\" "
                 if self.hardware_accelerator.has_accelerator():
                     cmd += "--use_cuda "
                 cmd += f"-te {top_end} -be {bottom_end} -le {left_end} -re {right_end} -nthr {cpu_count} -dsi "
@@ -630,6 +640,17 @@ class SubtitleExtractor:
                     "Try transcoding the video or changing VideoSubFinder decoder in settings."
                 )
             return
+
+    def _prepare_vsf_input_video(self):
+        self.vsf_input_video_path = self.video_path
+        if not self.transcode_before_vsf:
+            return self.video_path
+
+        output_path = os.path.join(self.temp_output_dir, "vsf_input.mp4")
+        self.append_output(f"Transcoding video before VideoSubFinder: {output_path}")
+        self.vsf_input_video_path = transcode_video_for_vsf(self.video_path, output_path)
+        self.append_output("Transcoding finished before VideoSubFinder")
+        return self.vsf_input_video_path
 
     @staticmethod
     def _is_ignorable_decoder_log(line):
@@ -1145,7 +1166,9 @@ class SubtitleExtractor:
         # 通知所有监听器
         self.notify_progress_listeners()
 
-    def start_subtitle_ocr_async(self):
+    def start_subtitle_ocr_async(self, video_path=None):
+        video_path = video_path or self.video_path
+
         def get_ocr_progress():
             """
             获取ocr识别进度
@@ -1186,7 +1209,7 @@ class SubtitleExtractor:
             'DEBUG_OCR_LOSS': config.debugOcrLoss.value,
             'HARDWARD_ACCELERATOR': self.hardware_accelerator,
         }
-        process, task_queue, progress_queue = subtitle_ocr.async_start(self.video_path, self.raw_subtitle_path, self.sub_area, options)
+        process, task_queue, progress_queue = subtitle_ocr.async_start(video_path, self.raw_subtitle_path, self.sub_area, options)
         ProcessManager.instance().add_process(process)
         self.manage_process(process.pid)
         self.subtitle_ocr_task_queue = task_queue
