@@ -123,6 +123,9 @@ ROI 应适当放宽：
 
 ```shell
 python scripts/batch_auto_extract.py <视频文件或目录>
+
+# 使用 -i 指定输入位置，使用 -o 指定输出位置
+python scripts/batch_auto_extract.py -i D:/videos -o D:/subtitles
 ```
 
 常用参数：
@@ -130,6 +133,9 @@ python scripts/batch_auto_extract.py <视频文件或目录>
 ```shell
 # 递归扫描目录
 python scripts/batch_auto_extract.py D:/videos --recursive
+
+# 输入与输出分离
+python scripts/batch_auto_extract.py -i D:/videos --recursive -o D:/subtitles
 
 # 重新识别 ROI，但保留已有 SRT 跳过逻辑
 python scripts/batch_auto_extract.py D:/videos --force-roi
@@ -151,8 +157,9 @@ python scripts/batch_auto_extract.py D:/videos --no-vsf-transcode
 ```
 
 脚本会在每个视频旁边生成 `*.subtitle_area.json`，并在高置信度时继续调用 `SubtitleExtractor(scan_strategy="vsf")` 生成同名 `.srt`。
-批处理默认会在 ROI 识别结束后，在项目 `output/<视频名>_vsf_input/vsf_input.mp4` 生成一个临时 H.264/yuv420p 兼容副本，供后续所有 VideoSubFinder 候选和 OCR 取帧共用；VideoSubFinder 默认先用 OpenCV 解码，失败且未产出结果时自动重试 FFmpeg；最终 `.srt` 仍输出到原视频旁边。
-当多个 ROI 候选同时达到置信度阈值时，批处理会为每个候选生成临时 SRT，提取文本后和标准招式字库做快速子串匹配；最终只复制匹配得分最高的 SRT 到原视频旁边，共享转码副本和其他候选临时结果会被删除。
+如果传入 `-o/--output`，`*.subtitle_area.json` 和最终 `.srt` 会写入指定输出目录；未传入时仍写在原视频旁边。
+批处理默认会在 ROI 识别结束后，在项目 `output/<视频名>_vsf_input/vsf_input.mp4` 生成一个临时 H.264/yuv420p 兼容副本，供后续所有 VideoSubFinder 候选和 OCR 取帧共用；VideoSubFinder 默认先用 OpenCV 解码，失败且未产出结果时自动重试 FFmpeg；最终 `.srt` 输出到原视频旁边或 `-o/--output` 指定目录。
+当多个 ROI 候选同时达到置信度阈值时，批处理会为每个候选生成临时 SRT，提取文本后和标准招式字库做快速子串匹配；最终只复制匹配得分最高的 SRT 到目标输出位置，共享转码副本和其他候选临时结果会被删除。
 
 ## 需要的小改造
 

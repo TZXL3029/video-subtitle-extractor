@@ -25,7 +25,15 @@ DEFAULT_EXTENSIONS = (".mp4", ".mkv", ".avi", ".mov", ".flv", ".wmv", ".m4v", ".
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Batch auto extract hard subtitles to SRT.")
-    parser.add_argument("inputs", nargs="+", help="Video files or directories.")
+    parser.add_argument("inputs", nargs="*", help="Video files or directories.")
+    parser.add_argument("-i", "--input", dest="input_paths", nargs="+", default=[], help="Video files or directories.")
+    parser.add_argument(
+        "-o",
+        "--output",
+        dest="output_dir",
+        default=None,
+        help="Directory for generated *.srt and *.subtitle_area.json files. Defaults to each video's directory.",
+    )
     parser.add_argument("--recursive", action="store_true", help="Scan input directories recursively.")
     parser.add_argument("--extensions", default=",".join(DEFAULT_EXTENSIONS), help="Comma-separated video extensions.")
     parser.add_argument("--force-roi", action="store_true", help="Regenerate *.subtitle_area.json.")
@@ -59,6 +67,12 @@ def main() -> int:
     args = parse_args()
     if not 0 <= args.ocr_drop_score <= 100:
         raise SystemExit("--ocr-drop-score must be between 0 and 100")
+    args.inputs = [*args.inputs, *args.input_paths]
+    if not args.inputs:
+        raise SystemExit("No input specified. Use positional inputs or -i/--input.")
+    args.output_dir = Path(args.output_dir).resolve() if args.output_dir else None
+    if args.output_dir is not None:
+        args.output_dir.mkdir(parents=True, exist_ok=True)
     logging.basicConfig(level=getattr(logging, args.log_level), format="%(levelname)s: %(message)s")
     extensions = normalize_extensions(args.extensions)
     video_paths = collect_video_paths(args.inputs, extensions, recursive=args.recursive)
@@ -102,8 +116,10 @@ def collect_video_paths(inputs: Iterable[str], extensions: Sequence[str], *, rec
 
 
 def process_video(video_path: Path, args: argparse.Namespace) -> str:
-    roi_path = subtitle_area_json_path(video_path)
-    srt_path = video_path.with_suffix(".srt")
+    roi_path = subtitle_area_json_path(video_path, args.output_dir)
+    srt_path = subtitle_output_path(video_path, args.output_dir)
+    roi_path.parent.mkdir(parents=True, exist_ok=True)
+    srt_path.parent.mkdir(parents=True, exist_ok=True)
 
     if srt_path.exists() and not args.force_srt:
         logging.info("Skip existing SRT: %s", srt_path)
@@ -131,6 +147,7 @@ def process_video(video_path: Path, args: argparse.Namespace) -> str:
         if len(candidate_entries) > 1 and args.label_matcher and args.label_matcher.terms:
             return extract_and_select_candidate_srt(
                 video_path,
+                srt_path,
                 roi_path,
                 result,
                 candidate_entries,
@@ -177,8 +194,18 @@ def get_or_detect_roi(video_path: Path, roi_path: Path, args: argparse.Namespace
     return result
 
 
-def subtitle_area_json_path(video_path: Path) -> Path:
-    return video_path.with_name(f"{video_path.stem}.subtitle_area.json")
+def subtitle_area_json_path(video_path: Path, output_dir: Path | None = None) -> Path:
+    filename = f"{video_path.stem}.subtitle_area.json"
+    if output_dir is not None:
+        return output_dir / filename
+    return video_path.with_name(filename)
+
+
+def subtitle_output_path(video_path: Path, output_dir: Path | None = None) -> Path:
+    filename = f"{video_path.stem}.srt"
+    if output_dir is not None:
+        return output_dir / filename
+    return video_path.with_name(filename)
 
 
 def load_label_matcher(label_config_dir: str):
@@ -212,6 +239,7 @@ def prepare_shared_vsf_input_after_roi(video_path: Path, args: argparse.Namespac
 
 def extract_and_select_candidate_srt(
     video_path: Path,
+    final_srt_path: Path,
     roi_path: Path,
     result,
     candidate_entries,
@@ -223,7 +251,6 @@ def extract_and_select_candidate_srt(
     from backend.tools.auto_subtitle_area import save_result_json
     from backend.tools.label_text_matcher import read_srt_text
 
-    final_srt_path = video_path.with_suffix(".srt")
     candidate_root = PROJECT_ROOT / "output" / f"{video_path.stem}_roi_candidates"
     shutil.rmtree(candidate_root, ignore_errors=True)
     candidate_root.mkdir(parents=True, exist_ok=True)

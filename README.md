@@ -225,6 +225,9 @@ python ./backend/main.py
 
 ```shell
 python scripts/batch_auto_extract.py <视频文件或目录>
+
+# 等价写法：用 -i 指定输入位置，用 -o 指定输出位置
+python scripts/batch_auto_extract.py -i D:/videos -o D:/subtitles
 ```
 
 常用示例：
@@ -235,6 +238,9 @@ python scripts/batch_auto_extract.py D:/videos/demo.mp4
 
 # 处理目录中的视频
 python scripts/batch_auto_extract.py D:/videos
+
+# 输入与输出分离
+python scripts/batch_auto_extract.py -i D:/videos --recursive -o D:/subtitles
 
 # 递归处理子目录
 python scripts/batch_auto_extract.py D:/videos --recursive
@@ -262,6 +268,8 @@ demo.mp4
 demo.subtitle_area.json
 demo.srt
 ```
+
+使用 `-o D:/subtitles` 时，`demo.subtitle_area.json` 和 `demo.srt` 会输出到 `D:/subtitles`。
 
 断点续跑规则：
 
