@@ -931,7 +931,7 @@ class SubtitleExtractor:
         self._merge_adjacent_duplicate_subtitles(self.subtitle_output_path)
         self.append_output(tr['Main']['SubLocation'].format(self.subtitle_output_path))
 
-    def _merge_adjacent_duplicate_subtitles(self, subtitle_path, max_gap_ms=120):
+    def _merge_adjacent_duplicate_subtitles(self, subtitle_path, max_gap_ms=1000):
         subs = pysrt.open(subtitle_path, encoding='utf-8')
         if len(subs) <= 1:
             return
@@ -941,6 +941,7 @@ class SubtitleExtractor:
             if merged_subs and self._is_same_subtitle_text(merged_subs[-1].text, sub.text) and sub.start.ordinal <= merged_subs[-1].end.ordinal + max_gap_ms:
                 if sub.end.ordinal > merged_subs[-1].end.ordinal:
                     merged_subs[-1].end = sub.end
+                merged_subs[-1].text = self._better_subtitle_text(merged_subs[-1].text, sub.text)
                 continue
             sub.index = len(merged_subs) + 1
             merged_subs.append(sub)
@@ -954,7 +955,26 @@ class SubtitleExtractor:
 
     @staticmethod
     def _is_same_subtitle_text(left, right):
-        return ''.join(unicodedata.normalize('NFKC', left).split()) == ''.join(unicodedata.normalize('NFKC', right).split())
+        left_chinese = SubtitleExtractor._chinese_subtitle_key(left)
+        right_chinese = SubtitleExtractor._chinese_subtitle_key(right)
+        if left_chinese or right_chinese:
+            return left_chinese == right_chinese
+        return SubtitleExtractor._normalized_subtitle_text(left) == SubtitleExtractor._normalized_subtitle_text(right)
+
+    @staticmethod
+    def _better_subtitle_text(left, right):
+        left_score = len(SubtitleExtractor._normalized_subtitle_text(left))
+        right_score = len(SubtitleExtractor._normalized_subtitle_text(right))
+        return right if right_score > left_score else left
+
+    @staticmethod
+    def _chinese_subtitle_key(text):
+        normalized = unicodedata.normalize('NFKC', text)
+        return ''.join(re.findall(r'[\u4e00-\u9fff]+', normalized))
+
+    @staticmethod
+    def _normalized_subtitle_text(text):
+        return ''.join(unicodedata.normalize('NFKC', text).split())
 
     def _detect_watermark_area(self):
         """
