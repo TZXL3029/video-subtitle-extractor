@@ -20,6 +20,11 @@ TPR_NOISE_MAX = 0.10
 TPR_PRIMARY_MIN = 0.20
 TPR_PRIMARY_MAX = 0.75
 ROI_MAX_AREA_RATIO = 1 / 3
+CANDIDATE_EXPORT_LIMIT = 10
+SHORT_PRIMARY_SUBTITLE_LABEL = "short_primary_subtitle"
+SHORT_PRIMARY_MIN_FRAME_HITS = 2
+SHORT_PRIMARY_MIN_SCORE = 0.35
+SHORT_PRIMARY_TEMPORAL_SCORE = 0.55
 
 
 @dataclass
@@ -86,7 +91,12 @@ class AutoSubtitleAreaResult:
 
         emitted = 0
         for index, candidate in enumerate(self.candidates):
-            if candidate.excluded or candidate.score < min_confidence:
+            if candidate.excluded:
+                continue
+            if candidate.score < min_confidence and not (
+                candidate.temporal_presence_label == SHORT_PRIMARY_SUBTITLE_LABEL
+                and candidate.score >= SHORT_PRIMARY_MIN_SCORE
+            ):
                 continue
             xmin, xmax, ymin, ymax = _pad_roi(candidate.roi, self.width, self.height, candidate.orientation)
             yield index, candidate, SubtitleArea(ymin, ymax, xmin, xmax)
@@ -105,7 +115,7 @@ class AutoSubtitleAreaResult:
             "sampled_frames": self.sampled_frames,
             "method_version": self.method_version,
             "status": self.status,
-            "candidates": [candidate.to_json_dict() for candidate in self.candidates],
+            "candidates": [candidate.to_json_dict() for candidate in self.candidates[:CANDIDATE_EXPORT_LIMIT]],
         }
         if self.selected_candidate_index is not None:
             data["selected_candidate_index"] = self.selected_candidate_index
@@ -280,7 +290,7 @@ def detect_auto_subtitle_area(
             sampled_frames=len(sample_frames),
             status="low_confidence",
             reason="all candidate bands were rejected by temporal presence rate (TPR)",
-            candidates=candidates[:5],
+            candidates=candidates[:CANDIDATE_EXPORT_LIMIT],
         )
 
     best = eligible_candidates[0]
@@ -298,7 +308,7 @@ def detect_auto_subtitle_area(
         sampled_frames=len(sample_frames),
         status=status,
         reason=reason,
-        candidates=candidates[:5],
+        candidates=candidates[:CANDIDATE_EXPORT_LIMIT],
         selected_candidate_index=0,
     )
 
@@ -513,6 +523,18 @@ def _score_horizontal_cluster(
     width_score = _piecewise_width_score(width_ratio)
     y_center = (ymin + ymax) / 2
     y_score = 1.0 if y_center >= height * 0.45 else 0.72
+    if excluded and _is_short_horizontal_primary_candidate(
+        frame_hits=frame_hits,
+        stability_score=stability_score,
+        center_score=center_score,
+        width_score=width_score,
+        y_center=y_center,
+        height=height,
+    ):
+        temporal_presence_score = SHORT_PRIMARY_TEMPORAL_SCORE
+        temporal_presence_label = SHORT_PRIMARY_SUBTITLE_LABEL
+        excluded = False
+        exclusion_reason = ""
     score = (
         hit_score * 0.22
         + temporal_score * 0.16
@@ -565,6 +587,16 @@ def _score_vertical_cluster(
     temporal_score = min(bucket_hits / 6, 1)
     narrow_score = _piecewise_vertical_width_score(width_ratio)
     height_score = _piecewise_height_score(height_ratio)
+    if excluded and _is_short_vertical_primary_candidate(
+        frame_hits=frame_hits,
+        stability_score=stability_score,
+        side_score=side_score,
+        height_score=height_score,
+    ):
+        temporal_presence_score = SHORT_PRIMARY_TEMPORAL_SCORE
+        temporal_presence_label = SHORT_PRIMARY_SUBTITLE_LABEL
+        excluded = False
+        exclusion_reason = ""
     score = (
         hit_score * 0.20
         + temporal_score * 0.14
@@ -600,6 +632,39 @@ def _score_temporal_presence(tpr: float) -> Tuple[float, str, bool, str]:
 
     progress = (tpr - TPR_PRIMARY_MAX) / max(1.0 - TPR_PRIMARY_MAX, 0.001)
     return 0.75 - max(0.0, min(progress, 1.0)) * 0.50, "high_presence", False, ""
+
+
+def _is_short_horizontal_primary_candidate(
+    *,
+    frame_hits: int,
+    stability_score: float,
+    center_score: float,
+    width_score: float,
+    y_center: float,
+    height: int,
+) -> bool:
+    return (
+        frame_hits >= SHORT_PRIMARY_MIN_FRAME_HITS
+        and stability_score >= 0.75
+        and center_score >= 0.55
+        and width_score >= 0.65
+        and y_center >= height * 0.35
+    )
+
+
+def _is_short_vertical_primary_candidate(
+    *,
+    frame_hits: int,
+    stability_score: float,
+    side_score: float,
+    height_score: float,
+) -> bool:
+    return (
+        frame_hits >= SHORT_PRIMARY_MIN_FRAME_HITS
+        and stability_score >= 0.75
+        and side_score >= 0.90
+        and height_score >= 0.72
+    )
 
 
 def _piecewise_width_score(width_ratio: float) -> float:

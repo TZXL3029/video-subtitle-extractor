@@ -1,0 +1,21 @@
+{
+  "created_at": "2026-07-29T08:46:19+00:00",
+  "current_milestone": "short subtitle roi rescue verification",
+  "milestones": [
+    {
+      "completed_at": "2026-07-29T08:50:03+00:00",
+      "name": "short subtitle roi rescue verification",
+      "next": "Leave changes unstaged for user review unless a commit is requested.",
+      "status": "verified",
+      "summary": "Verified the resumed short-duration fixed-position subtitle ROI handling with focused unit tests; no duplicate business-code rewrite was needed.",
+      "verification": "unittest and py_compile both passed with bundled Python"
+    }
+  ],
+  "mode": "stewarded",
+  "next": "Leave changes unstaged for user review unless a commit is requested.",
+  "project": "D:\\video-subtitle-extractor",
+  "status": "verified",
+  "task": "short subtitle roi rescue",
+  "updated_at": "2026-07-29T08:50:03+00:00",
+  "verification": "unittest and py_compile both passed with bundled Python"
+}
