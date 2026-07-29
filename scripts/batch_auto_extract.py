@@ -83,17 +83,25 @@ def main() -> int:
         return 2
     args.label_matcher = load_label_matcher(args.label_config_dir)
 
-    summary = {"total": len(video_paths), "success": 0, "skipped": 0, "failed": 0, "low_confidence": 0}
+    summary = {
+        "total": len(video_paths),
+        "success": 0,
+        "skipped": 0,
+        "failed": 0,
+        "low_confidence": 0,
+        "no_subtitle": 0,
+    }
     for video_path in video_paths:
         outcome = process_video(video_path, args)
         summary[outcome] += 1
 
     logging.info(
-        "Batch finished: total=%s success=%s skipped=%s low_confidence=%s failed=%s",
+        "Batch finished: total=%s success=%s skipped=%s low_confidence=%s no_subtitle=%s failed=%s",
         summary["total"],
         summary["success"],
         summary["skipped"],
         summary["low_confidence"],
+        summary["no_subtitle"],
         summary["failed"],
     )
     return 1 if summary["failed"] else 0
@@ -157,13 +165,19 @@ def process_video(video_path: Path, args: argparse.Namespace) -> str:
                 vsf_input_video_path=shared_vsf_input_path,
             )
 
-        extractor = run_subtitle_extractor_vsf_only(
-            video_path,
-            subtitle_area,
-            args,
-            subtitle_output_path=srt_path,
-            vsf_input_video_path=shared_vsf_input_path,
-        )
+        try:
+            extractor = run_subtitle_extractor_vsf_only(
+                video_path,
+                subtitle_area,
+                args,
+                subtitle_output_path=srt_path,
+                vsf_input_video_path=shared_vsf_input_path,
+            )
+        except RuntimeError as exc:
+            if is_vsf_no_subtitle_output_error(exc):
+                logging.info("No subtitle output from VideoSubFinder: %s", video_path)
+                return "no_subtitle"
+            raise
         logging.info("SRT generated: %s", extractor.subtitle_output_path)
         return "success"
     except Exception:
@@ -258,6 +272,8 @@ def extract_and_select_candidate_srt(
     candidate_root.mkdir(parents=True, exist_ok=True)
 
     evaluations = []
+    no_subtitle_count = 0
+    failed_count = 0
     try:
         for ordinal, (candidate_index, candidate, subtitle_area) in enumerate(
             order_candidate_entries_for_extraction(candidate_entries),
@@ -283,6 +299,11 @@ def extract_and_select_candidate_srt(
                     vsf_input_video_path=vsf_input_video_path,
                 )
             except Exception as exc:
+                if is_vsf_no_subtitle_output_error(exc):
+                    no_subtitle_count += 1
+                    logging.info("ROI candidate has no subtitle output: %s candidate=%s", video_path, ordinal)
+                    continue
+                failed_count += 1
                 logging.warning("ROI candidate extraction failed: %s candidate=%s error=%s", video_path, ordinal, exc)
                 logging.debug("ROI candidate extraction traceback", exc_info=True)
                 continue
@@ -322,7 +343,15 @@ def extract_and_select_candidate_srt(
                 return "success"
 
         if not evaluations:
-            logging.error("All ROI candidate extractions failed: %s", video_path)
+            if no_subtitle_count and failed_count == 0:
+                logging.info("No subtitle output from any ROI candidate: %s", video_path)
+                return "no_subtitle"
+            logging.error(
+                "All ROI candidate extractions failed: %s no_subtitle=%s failed=%s",
+                video_path,
+                no_subtitle_count,
+                failed_count,
+            )
             return "failed"
 
         best = max(
@@ -400,8 +429,16 @@ def run_subtitle_extractor_vsf_only(
     except RuntimeError as exc:
         if "VideoSubFinder failed" not in str(exc):
             raise
-        logging.warning("VideoSubFinder failed; abandoning ROI candidate without frame_det fallback: %s", exc)
+        if is_vsf_no_subtitle_output_error(exc):
+            logging.info("VideoSubFinder produced no subtitle output; abandoning ROI candidate: %s", exc)
+        else:
+            logging.warning("VideoSubFinder failed; abandoning ROI candidate without frame_det fallback: %s", exc)
         raise
+
+
+def is_vsf_no_subtitle_output_error(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return "videosubfinder failed" in message and "no subtitle output" in message
 
 
 def run_subtitle_extractor(

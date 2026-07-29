@@ -278,6 +278,7 @@ video.srt
 - 每个视频自动生成 `*.subtitle_area.json`。
 - 高置信度视频自动生成 `.srt`。
 - 低置信度视频记录 warning 或跳过，不阻塞整批任务。
+- VideoSubFinder 无字幕输出时按 `no_subtitle` 统计，不作为错误中断整批任务。
 - 原 GUI 流程不受影响。
 - 当前已有 OCR、VideoSubFinder、SRT 生成逻辑被复用。
 - 批处理有清晰日志，便于定位失败视频。
