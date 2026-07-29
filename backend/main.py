@@ -127,6 +127,8 @@ class SubtitleExtractor:
         self.subtitle_ocr_task_queue = None
         # 字幕OCR进度队列
         self.subtitle_ocr_progress_queue = None
+        self.subtitle_ocr_process_id = None
+        self.subtitle_ocr_progress_thread = None
         # vsf运行状态
         self.vsf_running = False
         # 进度监听器列表
@@ -244,10 +246,44 @@ class SubtitleExtractor:
                 pass
         if process is None:
             return
-        process.join(timeout=timeout)
-        if terminate_on_timeout and process.is_alive():
-            process.terminate()
-            process.join(timeout=3)
+        try:
+            process.join(timeout=timeout)
+            if terminate_on_timeout and process.is_alive():
+                process.terminate()
+                process.join(timeout=3)
+                if process.is_alive() and hasattr(process, 'kill'):
+                    process.kill()
+                    process.join(timeout=3)
+        finally:
+            progress_thread = self.subtitle_ocr_progress_thread
+            if progress_thread is not None and progress_thread.is_alive():
+                progress_thread.join(timeout=3)
+            self._release_subtitle_ocr_resources(process)
+
+    def _release_subtitle_ocr_resources(self, process=None):
+        for managed_queue in (self.subtitle_ocr_task_queue, self.subtitle_ocr_progress_queue):
+            if managed_queue is None:
+                continue
+            try:
+                managed_queue.close()
+                managed_queue.join_thread()
+            except Exception:
+                pass
+        self.subtitle_ocr_task_queue = None
+        self.subtitle_ocr_progress_queue = None
+        self.subtitle_ocr_progress_thread = None
+
+        manager = ProcessManager.instance()
+        if self.subtitle_ocr_process_id is not None:
+            manager.remove_process(self.subtitle_ocr_process_id)
+            self.subtitle_ocr_process_id = None
+        if process is not None:
+            manager.remove_process_ref(process)
+            if not process.is_alive():
+                try:
+                    process.close()
+                except Exception:
+                    pass
 
     def _select_scan_strategy(self):
         """
@@ -635,7 +671,7 @@ class SubtitleExtractor:
                     output_threads.append(Thread(target=vsf_output, daemon=True, args=(p.stderr, output_lines)))
                 for thread in output_threads:
                     thread.start()
-                ProcessManager.instance().add_process(p)
+                process_id = ProcessManager.instance().add_process(p)
                 self.manage_process(p.pid)
                 p.wait()
                 for thread in output_threads:
@@ -643,6 +679,15 @@ class SubtitleExtractor:
                 return p.returncode, "\n".join(output_lines)
             finally:
                 self.vsf_running = False
+                if 'process_id' in locals():
+                    ProcessManager.instance().remove_process(process_id)
+                if 'p' in locals():
+                    for stream in (p.stdout, p.stderr):
+                        try:
+                            if stream is not None:
+                                stream.close()
+                        except Exception:
+                            pass
                 if count_thread is not None:
                     count_thread.join(timeout=1)
 
@@ -1194,7 +1239,7 @@ class SubtitleExtractor:
     def start_subtitle_ocr_async(self, video_path=None):
         video_path = video_path or self.video_path
 
-        def get_ocr_progress():
+        def get_ocr_progress(progress_queue):
             """
             获取ocr识别进度
             生产者在所有帧入队后发送 (-2, total_tasks) 告知总帧数
@@ -1204,7 +1249,10 @@ class SubtitleExtractor:
             notify = True
             total_tasks = None
             while True:
-                value = self.subtitle_ocr_progress_queue.get(block=True)
+                try:
+                    value = progress_queue.get(block=True)
+                except (EOFError, OSError, ValueError):
+                    return
                 if notify:
                     self.append_output(tr['Main']['StartFindSub'])
                     notify = False
@@ -1235,12 +1283,13 @@ class SubtitleExtractor:
             'HARDWARD_ACCELERATOR': self.hardware_accelerator,
         }
         process, task_queue, progress_queue = subtitle_ocr.async_start(video_path, self.raw_subtitle_path, self.sub_area, options)
-        ProcessManager.instance().add_process(process)
+        self.subtitle_ocr_process_id = ProcessManager.instance().add_process(process)
         self.manage_process(process.pid)
         self.subtitle_ocr_task_queue = task_queue
         self.subtitle_ocr_progress_queue = progress_queue
         # 开启线程负责更新OCR进度
-        Thread(target=get_ocr_progress, daemon=True).start()
+        self.subtitle_ocr_progress_thread = Thread(target=get_ocr_progress, args=(progress_queue,), daemon=True)
+        self.subtitle_ocr_progress_thread.start()
         return process
 
     def srt2txt(self, srt_file):

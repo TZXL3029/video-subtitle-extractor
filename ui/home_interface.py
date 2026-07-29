@@ -469,11 +469,23 @@ class HomeInterface(QWidget):
             if not self.running_task:
                 return process
             process.start()
-            ProcessManager.instance().add_process(process)
+            process_id = ProcessManager.instance().add_process(process)
             self.running_process = process
             process.join()
             print(f"Process exited with code {process.exitcode}")
         finally:
+            if 'process_id' in locals():
+                ProcessManager.instance().remove_process(process_id)
+            for pid in self.running_sub_process_pids:
+                ProcessManager.instance().remove_pid(pid)
+            self.running_sub_process_pids = []
+            if self.running_process is process:
+                self.running_process = None
+            if not process.is_alive():
+                try:
+                    process.close()
+                except Exception:
+                    pass
             subtitle_extractor_remote_caller.stop()
         return process
 

@@ -72,6 +72,27 @@ class ProcessManager:
             print(f"Removed process: {process_id}")
             return True
         return False
+
+    def remove_process_ref(self, process):
+        """按进程对象注销已完成的进程记录。"""
+        removed = False
+        for process_id, managed_process in list(self.processes.items()):
+            if managed_process is process:
+                del self.processes[process_id]
+                print(f"Removed process: {process_id}")
+                removed = True
+        return removed
+
+    def remove_pid(self, pid):
+        """按 PID 注销已完成或已移交的进程记录。"""
+        removed = False
+        for process_id, managed_process in list(self.processes.items()):
+            managed_pid = managed_process if isinstance(managed_process, int) else getattr(managed_process, 'pid', None)
+            if managed_pid == pid:
+                del self.processes[process_id]
+                print(f"Removed process: {process_id}")
+                removed = True
+        return removed
     
     def terminate_all(self):
         """终止所有管理的进程。
