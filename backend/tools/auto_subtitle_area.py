@@ -19,6 +19,7 @@ Coordinate = Tuple[int, int, int, int]  # xmin, xmax, ymin, ymax
 TPR_NOISE_MAX = 0.10
 TPR_PRIMARY_MIN = 0.20
 TPR_PRIMARY_MAX = 0.75
+ROI_MAX_AREA_RATIO = 1 / 3
 
 
 @dataclass
@@ -77,7 +78,7 @@ class AutoSubtitleAreaResult:
             return None
         from backend.bean.subtitle_area import SubtitleArea
 
-        xmin, xmax, ymin, ymax = self.subtitle_roi
+        xmin, xmax, ymin, ymax = _limit_roi_area(self.subtitle_roi, self.width, self.height)
         return SubtitleArea(ymin, ymax, xmin, xmax)
 
     def iter_candidate_subtitle_areas(self, min_confidence: float = 0.0, max_candidates: Optional[int] = None):
@@ -113,7 +114,7 @@ class AutoSubtitleAreaResult:
         if self.text_match_coverage is not None:
             data["text_match_coverage"] = round(self.text_match_coverage, 4)
         if self.subtitle_roi is not None:
-            xmin, xmax, ymin, ymax = self.subtitle_roi
+            xmin, xmax, ymin, ymax = _limit_roi_area(self.subtitle_roi, self.width, self.height)
             data["subtitle_roi"] = {"xmin": xmin, "xmax": xmax, "ymin": ymin, "ymax": ymax}
         if self.reason:
             data["reason"] = self.reason
@@ -655,7 +656,46 @@ def _pad_roi(roi: Coordinate, width: int, height: int, orientation: str = "horiz
         elif ymax - ymin < min_height and ymax == height:
             ymin = max(0, height - min_height)
 
-    return (int(xmin), int(xmax), int(ymin), int(ymax))
+    return _limit_roi_area((xmin, xmax, ymin, ymax), width, height)
+
+
+def _limit_roi_area(roi: Coordinate, width: int, height: int) -> Coordinate:
+    xmin, xmax, ymin, ymax = roi
+    if width <= 0 or height <= 0:
+        return (int(xmin), int(xmax), int(ymin), int(ymax))
+
+    xmin, xmax = sorted((max(0, min(width, int(xmin))), max(0, min(width, int(xmax)))))
+    ymin, ymax = sorted((max(0, min(height, int(ymin))), max(0, min(height, int(ymax)))))
+    box_w = xmax - xmin
+    box_h = ymax - ymin
+    if box_w <= 0 or box_h <= 0:
+        return (int(xmin), int(xmax), int(ymin), int(ymax))
+
+    max_area = width * height * ROI_MAX_AREA_RATIO
+    if box_w * box_h <= max_area:
+        return (int(xmin), int(xmax), int(ymin), int(ymax))
+
+    scale = math.sqrt(max_area / (box_w * box_h))
+    new_w = max(1, min(width, int(math.floor(box_w * scale))))
+    new_h = max(1, min(height, int(math.floor(box_h * scale))))
+    while new_w * new_h > max_area and (new_w > 1 or new_h > 1):
+        if new_w >= new_h and new_w > 1:
+            new_w -= 1
+        elif new_h > 1:
+            new_h -= 1
+
+    center_x = (xmin + xmax) / 2
+    center_y = (ymin + ymax) / 2
+    limited_xmin = int(round(center_x - new_w / 2))
+    limited_ymin = int(round(center_y - new_h / 2))
+    limited_xmin = max(0, min(width - new_w, limited_xmin))
+    limited_ymin = max(0, min(height - new_h, limited_ymin))
+    return (
+        int(limited_xmin),
+        int(limited_xmin + new_w),
+        int(limited_ymin),
+        int(limited_ymin + new_h),
+    )
 
 
 def _center_y(coordinate: Coordinate) -> float:
