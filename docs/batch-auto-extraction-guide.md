@@ -280,6 +280,7 @@ video.srt
 - 低置信度视频记录 warning 或跳过，不阻塞整批任务。
 - 多 ROI 候选的最高字库匹配 `text_score` 和最高 `coverage` 都低于 `0.50` 时按低置信度跳过。
 - 短时固定位置字幕可作为 `short_primary_subtitle` 候选进入 OCR；初始 ROI 无候选或字库匹配过低时会触发加密 ROI rescue。
+- ROI 候选在 VideoSubFinder 的 OpenCV/FFmpeg 解码重试后仍无字幕输出或识别失败时，会写回为 `excluded`，后续复用 ROI JSON 时跳过该候选。
 - VideoSubFinder 无字幕输出时按 `no_subtitle` 统计，不作为错误中断整批任务。
 - 原 GUI 流程不受影响。
 - 当前已有 OCR、VideoSubFinder、SRT 生成逻辑被复用。

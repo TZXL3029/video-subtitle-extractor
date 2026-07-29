@@ -202,6 +202,51 @@ class ShortSubtitleRoiRescueTests(unittest.TestCase):
         self.assertEqual(result.candidates, [candidate])
         self.assertEqual(len(saved), 1)
 
+    def test_vsf_candidate_failure_marks_candidate_excluded_in_json(self) -> None:
+        result = AutoSubtitleAreaResult(
+            video="demo.mp4",
+            width=1280,
+            height=720,
+            fps=30,
+            frame_count=1800,
+            subtitle_roi=None,
+            confidence=0,
+            sampled_frames=240,
+            status="low_confidence",
+            candidates=[],
+        )
+        candidate = SubtitleAreaCandidate(
+            roi=(320, 900, 600, 640),
+            score=0.42,
+            hits=2,
+            frame_hits=2,
+            time_bucket_hits=2,
+            temporal_presence_label="short_primary_subtitle",
+            excluded=False,
+        )
+        saved = []
+
+        batch_auto_extract.mark_candidate_excluded(
+            (0, candidate, FakeSubtitleArea(570, 670, 280, 940)),
+            result,
+            Path("demo.subtitle_area.json"),
+            lambda saved_result, output_path: saved.append((saved_result, output_path)),
+            "VideoSubFinder failed with decoder ffmpeg: no subtitle output",
+        )
+
+        self.assertTrue(candidate.excluded)
+        self.assertIn("VideoSubFinder failed for ROI candidate", candidate.exclusion_reason)
+        self.assertEqual(result.candidates, [candidate])
+        self.assertEqual(len(saved), 1)
+
+    def test_only_vsf_failures_are_candidate_exclusion_errors(self) -> None:
+        self.assertTrue(
+            batch_auto_extract.is_vsf_candidate_exclusion_error(
+                RuntimeError("VideoSubFinder failed with decoder opencv: no subtitle output")
+            )
+        )
+        self.assertFalse(batch_auto_extract.is_vsf_candidate_exclusion_error(RuntimeError("OCR failed")))
+
 
 if __name__ == "__main__":
     unittest.main()

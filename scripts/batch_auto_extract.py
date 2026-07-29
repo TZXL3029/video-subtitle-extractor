@@ -191,6 +191,10 @@ def process_video(video_path: Path, args: argparse.Namespace) -> str:
                 vsf_input_video_path=shared_vsf_input_path,
             )
         except RuntimeError as exc:
+            if candidate_entries and is_vsf_candidate_exclusion_error(exc):
+                from backend.tools.auto_subtitle_area import save_result_json
+
+                mark_candidate_excluded(candidate_entries[0], result, roi_path, save_result_json, str(exc))
             if is_vsf_no_subtitle_output_error(exc):
                 logging.info("No subtitle output from VideoSubFinder: %s", video_path)
                 return "no_subtitle"
@@ -441,6 +445,14 @@ def extract_and_select_candidate_srt(
                         vsf_input_video_path=vsf_input_video_path,
                     )
                 except Exception as exc:
+                    if is_vsf_candidate_exclusion_error(exc):
+                        mark_candidate_excluded(
+                            (candidate_index, candidate, subtitle_area),
+                            result,
+                            roi_path,
+                            save_result_json,
+                            str(exc),
+                        )
                     if is_vsf_no_subtitle_output_error(exc):
                         no_subtitle_count += 1
                         logging.info("ROI candidate has no subtitle output: %s candidate=%s", video_path, ordinal)
@@ -643,6 +655,22 @@ def record_candidate_roi_result(
     save_result_json(result, roi_path)
 
 
+def mark_candidate_excluded(candidate_entry, result, roi_path, save_result_json, failure_reason: str) -> None:
+    _, candidate, _ = candidate_entry
+    candidate.excluded = True
+    candidate.exclusion_reason = build_vsf_candidate_exclusion_reason(failure_reason)
+    ensure_result_candidate(result, candidate)
+    save_result_json(result, roi_path)
+
+
+def build_vsf_candidate_exclusion_reason(failure_reason: str) -> str:
+    normalized = " ".join(str(failure_reason).split())
+    prefix = "VideoSubFinder failed for ROI candidate"
+    if not normalized:
+        return prefix
+    return f"{prefix}: {normalized[:240]}"
+
+
 def ensure_result_candidate(result, candidate) -> int:
     existing_index = find_result_candidate_index(result, candidate)
     if existing_index is not None:
@@ -696,6 +724,10 @@ def run_subtitle_extractor_vsf_only(
 def is_vsf_no_subtitle_output_error(exc: Exception) -> bool:
     message = str(exc).lower()
     return "videosubfinder failed" in message and "no subtitle output" in message
+
+
+def is_vsf_candidate_exclusion_error(exc: Exception) -> bool:
+    return "videosubfinder failed" in str(exc).lower()
 
 
 def run_subtitle_extractor(
