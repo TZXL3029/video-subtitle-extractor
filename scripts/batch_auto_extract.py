@@ -23,6 +23,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 DEFAULT_EXTENSIONS = (".mp4", ".mkv", ".avi", ".mov", ".flv", ".wmv", ".m4v", ".webm")
 LABEL_COVERAGE_EARLY_STOP = 0.90
+TEXT_MATCH_LOW_CONFIDENCE_THRESHOLD = 0.50
 
 
 def parse_args() -> argparse.Namespace:
@@ -363,6 +364,27 @@ def extract_and_select_candidate_srt(
                 -item["ordinal"],
             ),
         )
+        highest_text_score, highest_coverage = highest_text_match_scores(evaluations)
+        if is_low_text_match_confidence(highest_text_score, highest_coverage):
+            record_candidate_match_result(
+                best,
+                result,
+                roi_path,
+                save_result_json,
+                status="low_confidence",
+                reason="highest text match score and coverage below threshold",
+            )
+            logging.warning(
+                "Low-confidence text match skipped: %s candidate=%s "
+                "highest_coverage=%.4f highest_text_score=%.4f threshold=%.2f",
+                video_path,
+                best["ordinal"],
+                highest_coverage,
+                highest_text_score,
+                TEXT_MATCH_LOW_CONFIDENCE_THRESHOLD,
+            )
+            return "low_confidence"
+
         finalize_candidate_selection(best, final_srt_path, result, roi_path, save_result_json, config)
 
         logging.info(
@@ -388,11 +410,36 @@ def order_candidate_entries_for_extraction(candidate_entries):
     return [*primary_entries, *secondary_entries]
 
 
+def highest_text_match_scores(evaluations) -> tuple[float, float]:
+    highest_text_score = max(item["text_match"].score for item in evaluations)
+    highest_coverage = max(item["text_match"].coverage_score for item in evaluations)
+    return highest_text_score, highest_coverage
+
+
+def is_low_text_match_confidence(highest_text_score: float, highest_coverage: float) -> bool:
+    return (
+        highest_text_score < TEXT_MATCH_LOW_CONFIDENCE_THRESHOLD
+        and highest_coverage < TEXT_MATCH_LOW_CONFIDENCE_THRESHOLD
+    )
+
+
 def finalize_candidate_selection(evaluation, final_srt_path, result, roi_path, save_result_json, config) -> None:
     shutil.copy2(evaluation["srt_path"], final_srt_path)
     if config.generateTxt.value:
         evaluation["extractor"].srt2txt(str(final_srt_path))
 
+    record_candidate_match_result(evaluation, result, roi_path, save_result_json)
+
+
+def record_candidate_match_result(
+    evaluation,
+    result,
+    roi_path,
+    save_result_json,
+    *,
+    status: str | None = None,
+    reason: str | None = None,
+) -> None:
     selected_area = evaluation["subtitle_area"]
     result.subtitle_roi = (
         int(selected_area.xmin),
@@ -404,6 +451,10 @@ def finalize_candidate_selection(evaluation, final_srt_path, result, roi_path, s
     result.selected_candidate_index = evaluation["candidate_index"]
     result.text_match_score = evaluation["text_match"].score
     result.text_match_coverage = evaluation["text_match"].coverage_score
+    if status is not None:
+        result.status = status
+    if reason is not None:
+        result.reason = reason
     save_result_json(result, roi_path)
 
 
