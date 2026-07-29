@@ -314,10 +314,12 @@ def build_sample_frame_numbers(
         return []
     if samples is None:
         duration_seconds = frame_count / fps if fps > 0 else 0
-        if duration_seconds and duration_seconds < 5 * 60:
-            samples = 60
+        if duration_seconds and duration_seconds < 10 * 60:
+            samples = 45
         elif duration_seconds and duration_seconds < 30 * 60:
-            samples = 180
+            samples = 90
+        elif duration_seconds and duration_seconds < 60 * 60:
+            samples = 150
         else:
             samples = 240
 
