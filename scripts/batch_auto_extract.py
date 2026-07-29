@@ -22,6 +22,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 DEFAULT_EXTENSIONS = (".mp4", ".mkv", ".avi", ".mov", ".flv", ".wmv", ".m4v", ".webm")
+LABEL_COVERAGE_EARLY_STOP = 0.90
 
 
 def parse_args() -> argparse.Namespace:
@@ -258,7 +259,10 @@ def extract_and_select_candidate_srt(
 
     evaluations = []
     try:
-        for ordinal, (candidate_index, candidate, subtitle_area) in enumerate(candidate_entries, start=1):
+        for ordinal, (candidate_index, candidate, subtitle_area) in enumerate(
+            order_candidate_entries_for_extraction(candidate_entries),
+            start=1,
+        ):
             candidate_srt = candidate_root / f"candidate_{ordinal}.srt"
             candidate_work_dir = candidate_root / f"work_{ordinal}"
             logging.info(
@@ -285,23 +289,37 @@ def extract_and_select_candidate_srt(
 
             text = read_srt_text(candidate_srt)
             match_result = args.label_matcher.score_text(text)
-            evaluations.append(
-                {
-                    "ordinal": ordinal,
-                    "candidate_index": candidate_index,
-                    "candidate": candidate,
-                    "subtitle_area": subtitle_area,
-                    "srt_path": candidate_srt,
-                    "extractor": extractor,
-                    "text_match": match_result,
-                }
-            )
+            evaluation = {
+                "ordinal": ordinal,
+                "candidate_index": candidate_index,
+                "candidate": candidate,
+                "subtitle_area": subtitle_area,
+                "srt_path": candidate_srt,
+                "extractor": extractor,
+                "text_match": match_result,
+            }
+            evaluations.append(evaluation)
             logging.info(
-                "ROI candidate scored: candidate=%s text_score=%.4f matched=%s",
+                "ROI candidate scored: candidate=%s text_score=%.4f coverage=%.4f matched=%s",
                 ordinal,
                 match_result.score,
+                match_result.coverage_score,
                 ", ".join(match_result.matched_terms[:8]) if match_result.matched_terms else "-",
             )
+            if (
+                candidate.temporal_presence_label == "primary_subtitle"
+                and match_result.coverage_score >= LABEL_COVERAGE_EARLY_STOP
+            ):
+                finalize_candidate_selection(evaluation, final_srt_path, result, roi_path, save_result_json, config)
+                logging.info(
+                    "Selected ROI candidate early: %s coverage=%.4f text_score=%.4f roi_score=%.4f output=%s",
+                    ordinal,
+                    match_result.coverage_score,
+                    match_result.score,
+                    candidate.score,
+                    final_srt_path,
+                )
+                return "success"
 
         if not evaluations:
             logging.error("All ROI candidate extractions failed: %s", video_path)
@@ -309,27 +327,19 @@ def extract_and_select_candidate_srt(
 
         best = max(
             evaluations,
-            key=lambda item: (item["text_match"].score, item["candidate"].score, -item["ordinal"]),
+            key=lambda item: (
+                item["text_match"].coverage_score,
+                item["text_match"].score,
+                item["candidate"].score,
+                -item["ordinal"],
+            ),
         )
-        shutil.copy2(best["srt_path"], final_srt_path)
-        if config.generateTxt.value:
-            best["extractor"].srt2txt(str(final_srt_path))
-
-        selected_area = best["subtitle_area"]
-        result.subtitle_roi = (
-            int(selected_area.xmin),
-            int(selected_area.xmax),
-            int(selected_area.ymin),
-            int(selected_area.ymax),
-        )
-        result.confidence = best["candidate"].score
-        result.selected_candidate_index = best["candidate_index"]
-        result.text_match_score = best["text_match"].score
-        save_result_json(result, roi_path)
+        finalize_candidate_selection(best, final_srt_path, result, roi_path, save_result_json, config)
 
         logging.info(
-            "Selected ROI candidate: %s text_score=%.4f roi_score=%.4f output=%s",
+            "Selected ROI candidate: %s coverage=%.4f text_score=%.4f roi_score=%.4f output=%s",
             best["ordinal"],
+            best["text_match"].coverage_score,
             best["text_match"].score,
             best["candidate"].score,
             final_srt_path,
@@ -337,6 +347,35 @@ def extract_and_select_candidate_srt(
         return "success"
     finally:
         shutil.rmtree(candidate_root, ignore_errors=True)
+
+
+def order_candidate_entries_for_extraction(candidate_entries):
+    primary_entries = [
+        entry for entry in candidate_entries if entry[1].temporal_presence_label == "primary_subtitle"
+    ]
+    secondary_entries = [
+        entry for entry in candidate_entries if entry[1].temporal_presence_label != "primary_subtitle"
+    ]
+    return [*primary_entries, *secondary_entries]
+
+
+def finalize_candidate_selection(evaluation, final_srt_path, result, roi_path, save_result_json, config) -> None:
+    shutil.copy2(evaluation["srt_path"], final_srt_path)
+    if config.generateTxt.value:
+        evaluation["extractor"].srt2txt(str(final_srt_path))
+
+    selected_area = evaluation["subtitle_area"]
+    result.subtitle_roi = (
+        int(selected_area.xmin),
+        int(selected_area.xmax),
+        int(selected_area.ymin),
+        int(selected_area.ymax),
+    )
+    result.confidence = evaluation["candidate"].score
+    result.selected_candidate_index = evaluation["candidate_index"]
+    result.text_match_score = evaluation["text_match"].score
+    result.text_match_coverage = evaluation["text_match"].coverage_score
+    save_result_json(result, roi_path)
 
 
 def run_subtitle_extractor_with_fallback(
