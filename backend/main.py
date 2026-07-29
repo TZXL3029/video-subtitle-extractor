@@ -45,10 +45,6 @@ import multiprocessing
 import time
 import pysrt
 
-VSF_BOUNDARY_EPSILON = 0.001
-VSF_MIN_SCAN_WIDTH_RATIO = 1 / 3
-VSF_MIN_SCAN_HEIGHT_RATIO = 1 / 3
-
 class SubtitleExtractor:
     """
     视频字幕提取类
@@ -642,8 +638,16 @@ class SubtitleExtractor:
 
         vsf_input_video_path = self.vsf_input_video_path or self.video_path
 
-        def build_vsf_command(decoder, scan_area):
-            top_end, bottom_end, left_end, right_end = self._vsf_area_parameters(scan_area)
+        # ：图像上半部分所占百分比，取值【0-1】
+        top_end = 1 - self.sub_area.ymin / self.frame_height
+        # bottom_end：图像下半部分所占百分比，取值【0-1】
+        bottom_end = 1 - self.sub_area.ymax / self.frame_height
+        # left_end：图像左半部分所占百分比，取值【0-1】
+        left_end = self.sub_area.xmin / self.frame_width
+        # re：图像右半部分所占百分比，取值【0-1】
+        right_end = self.sub_area.xmax / self.frame_width
+
+        def build_vsf_command(decoder):
             cmd = [path_vsf]
             if platform.system() == 'Windows':
                 cmd.append("--use_cuda")
@@ -677,16 +681,11 @@ class SubtitleExtractor:
             cmd.append(f"--open_video_{decoder.value.lower()}")
             return cmd
 
-        def run_vsf_once(decoder, scan_area, scan_label):
-            cmd = build_vsf_command(decoder, scan_area)
+        def run_vsf_once(decoder):
+            cmd = build_vsf_command(decoder)
             output_lines = []
             count_thread = None
             self.append_output(f"VideoSubFinder decoder: {decoder.value}")
-            self.append_output(
-                "VideoSubFinder scan area "
-                f"({scan_label}): x=({int(scan_area.xmin)}, {int(scan_area.xmax)}) "
-                f"y=({int(scan_area.ymin)}, {int(scan_area.ymax)})"
-            )
             try:
                 self.vsf_running = True
                 output_threads = []
@@ -730,90 +729,23 @@ class SubtitleExtractor:
 
         last_return_code = 0
         last_output = ""
-        last_decoder = decoders[-1]
-        scan_areas = self._vsf_scan_areas()
-        for scan_index, (scan_label, scan_area) in enumerate(scan_areas):
-            if scan_index > 0:
-                self.append_output(f"VideoSubFinder produced no output; retrying with {scan_label}")
+        for index, decoder in enumerate(decoders):
+            last_return_code, last_output = run_vsf_once(decoder)
+            wrong_frame_size = "wrong frame sizes" in last_output.lower() or "frame_width: 0" in last_output.lower() or "frame_height: 0" in last_output.lower()
+            produced_output = has_vsf_output()
+            if produced_output:
+                return
+            if index + 1 < len(decoders):
+                self.append_output(f"VideoSubFinder failed with {decoder.value}; retrying with {decoders[index + 1].value}")
                 remove_vsf_outputs()
-            for index, decoder in enumerate(decoders):
-                last_decoder = decoder
-                last_return_code, last_output = run_vsf_once(decoder, scan_area, scan_label)
-                wrong_frame_size = "wrong frame sizes" in last_output.lower() or "frame_width: 0" in last_output.lower() or "frame_height: 0" in last_output.lower()
-                produced_output = has_vsf_output()
-                if produced_output:
-                    return
-                should_retry_decoder = (wrong_frame_size or last_return_code != 0) and index + 1 < len(decoders)
-                if should_retry_decoder:
-                    self.append_output(f"VideoSubFinder failed with {decoder.value}; retrying with {decoders[index + 1].value}")
-                    remove_vsf_outputs()
-                    continue
-                if scan_index + 1 < len(scan_areas):
-                    break
-                raise RuntimeError(
-                    f"VideoSubFinder failed with decoder {decoder.value}. "
-                    "Try transcoding the video or changing VideoSubFinder decoder in settings."
-                )
-
-        raise RuntimeError(
-            f"VideoSubFinder failed with decoder {last_decoder.value}. "
-            "Try transcoding the video or changing VideoSubFinder decoder in settings."
-        )
-
-    def _vsf_scan_areas(self):
-        scan_areas = [("detected ROI", self.sub_area)]
-        expanded_area = self._expanded_vsf_scan_area(self.sub_area)
-        if expanded_area is not None and not self._same_subtitle_area(self.sub_area, expanded_area):
-            scan_areas.append(("expanded ROI", expanded_area))
-        return scan_areas
-
-    def _expanded_vsf_scan_area(self, area):
-        if area is None or self.frame_width <= 0 or self.frame_height <= 0:
-            return None
-        min_width = int(round(self.frame_width * VSF_MIN_SCAN_WIDTH_RATIO))
-        min_height = int(round(self.frame_height * VSF_MIN_SCAN_HEIGHT_RATIO))
-        xmin, xmax = self._expand_interval(area.xmin, area.xmax, self.frame_width, min_width)
-        ymin, ymax = self._expand_interval(area.ymin, area.ymax, self.frame_height, min_height)
-        return SubtitleArea(ymin, ymax, xmin, xmax)
-
-    @staticmethod
-    def _expand_interval(start, end, limit, min_size):
-        start = int(max(0, min(limit, round(start))))
-        end = int(max(0, min(limit, round(end))))
-        if end < start:
-            start, end = end, start
-        target_size = min(limit, max(end - start, min_size))
-        center = (start + end) / 2
-        new_start = int(round(center - target_size / 2))
-        new_end = new_start + target_size
-        if new_start < 0:
-            new_end -= new_start
-            new_start = 0
-        if new_end > limit:
-            new_start -= new_end - limit
-            new_end = limit
-        return max(0, new_start), min(limit, new_end)
-
-    @staticmethod
-    def _same_subtitle_area(left, right):
-        return (
-            int(round(left.xmin)) == int(round(right.xmin))
-            and int(round(left.xmax)) == int(round(right.xmax))
-            and int(round(left.ymin)) == int(round(right.ymin))
-            and int(round(left.ymax)) == int(round(right.ymax))
-        )
-
-    def _vsf_area_parameters(self, area):
-        # VideoSubFinder is fragile at exact 0/1 ROI borders on some videos.
-        top_end = self._clamp_vsf_ratio(1 - area.ymin / self.frame_height)
-        bottom_end = self._clamp_vsf_ratio(1 - area.ymax / self.frame_height)
-        left_end = self._clamp_vsf_ratio(area.xmin / self.frame_width)
-        right_end = self._clamp_vsf_ratio(area.xmax / self.frame_width)
-        return top_end, bottom_end, left_end, right_end
-
-    @staticmethod
-    def _clamp_vsf_ratio(value):
-        return max(VSF_BOUNDARY_EPSILON, min(1 - VSF_BOUNDARY_EPSILON, float(value)))
+                continue
+            reason = "invalid frame size" if wrong_frame_size else "no subtitle output"
+            if last_return_code != 0:
+                reason = f"{reason}, exit={last_return_code}"
+            raise RuntimeError(
+                f"VideoSubFinder failed with decoder {decoder.value}: {reason}. "
+                "Try transcoding the video or changing VideoSubFinder decoder in settings."
+            )
 
     def _prepare_vsf_input_video(self):
         if self.vsf_input_video_path and self.vsf_input_video_path != self.video_path and not self.transcode_before_vsf:

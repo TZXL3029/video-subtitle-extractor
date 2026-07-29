@@ -157,7 +157,7 @@ def process_video(video_path: Path, args: argparse.Namespace) -> str:
                 vsf_input_video_path=shared_vsf_input_path,
             )
 
-        extractor = run_subtitle_extractor_with_fallback(
+        extractor = run_subtitle_extractor_vsf_only(
             video_path,
             subtitle_area,
             args,
@@ -274,7 +274,7 @@ def extract_and_select_candidate_srt(
                 candidate.temporal_presence_label,
             )
             try:
-                extractor = run_subtitle_extractor_with_fallback(
+                extractor = run_subtitle_extractor_vsf_only(
                     video_path,
                     subtitle_area,
                     args,
@@ -378,7 +378,7 @@ def finalize_candidate_selection(evaluation, final_srt_path, result, roi_path, s
     save_result_json(result, roi_path)
 
 
-def run_subtitle_extractor_with_fallback(
+def run_subtitle_extractor_vsf_only(
     video_path: Path,
     subtitle_area,
     args: argparse.Namespace,
@@ -400,16 +400,8 @@ def run_subtitle_extractor_with_fallback(
     except RuntimeError as exc:
         if "VideoSubFinder failed" not in str(exc):
             raise
-        logging.warning("VideoSubFinder failed, retrying with frame_det: %s", exc)
-        return run_subtitle_extractor(
-            video_path,
-            subtitle_area,
-            args,
-            subtitle_output_path=subtitle_output_path,
-            temp_output_dir=temp_output_dir,
-            vsf_input_video_path=None,
-            scan_strategy="frame_det",
-        )
+        logging.warning("VideoSubFinder failed; abandoning ROI candidate without frame_det fallback: %s", exc)
+        raise
 
 
 def run_subtitle_extractor(
