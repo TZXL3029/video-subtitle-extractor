@@ -218,6 +218,7 @@ class SubtitleExtractor:
                 self.generate_subtitle_file()
 
             self.update_progress(post=90)
+            subtitle_ocr_process = None
 
             if config.wordSegmentation.value:
                 reformat.execute(self.subtitle_output_path, config.language.value)
@@ -228,7 +229,7 @@ class SubtitleExtractor:
         finally:
             self.isFinished = True
             self.vsf_running = False
-            if subtitle_ocr_process is not None and subtitle_ocr_process.is_alive():
+            if subtitle_ocr_process is not None and self._process_is_alive(subtitle_ocr_process):
                 self._finish_subtitle_ocr_process(subtitle_ocr_process, timeout=3, terminate_on_timeout=True)
             # 删除缓存文件
             self.empty_cache()
@@ -247,11 +248,14 @@ class SubtitleExtractor:
         if process is None:
             return
         try:
-            process.join(timeout=timeout)
-            if terminate_on_timeout and process.is_alive():
+            try:
+                process.join(timeout=timeout)
+            except ValueError:
+                return
+            if terminate_on_timeout and self._process_is_alive(process):
                 process.terminate()
                 process.join(timeout=3)
-                if process.is_alive() and hasattr(process, 'kill'):
+                if self._process_is_alive(process) and hasattr(process, 'kill'):
                     process.kill()
                     process.join(timeout=3)
         finally:
@@ -259,6 +263,13 @@ class SubtitleExtractor:
             if progress_thread is not None and progress_thread.is_alive():
                 progress_thread.join(timeout=3)
             self._release_subtitle_ocr_resources(process)
+
+    @staticmethod
+    def _process_is_alive(process):
+        try:
+            return process.is_alive()
+        except ValueError:
+            return False
 
     def _release_subtitle_ocr_resources(self, process=None):
         for managed_queue in (self.subtitle_ocr_task_queue, self.subtitle_ocr_progress_queue):
@@ -279,7 +290,7 @@ class SubtitleExtractor:
             self.subtitle_ocr_process_id = None
         if process is not None:
             manager.remove_process_ref(process)
-            if not process.is_alive():
+            if not self._process_is_alive(process):
                 try:
                     process.close()
                 except Exception:
