@@ -35,6 +35,7 @@ class LabelTerm:
     normalized: str
     weight: float
     source: str
+    action_groups: Sequence[str] = ()
 
 
 @dataclass(frozen=True)
@@ -42,11 +43,18 @@ class LabelMatchResult:
     score: float
     matched_terms: Sequence[str]
     term_count: int
+    coverage_score: float = 0.0
+    matched_action_groups: Sequence[str] = ()
+    total_action_groups: int = 0
 
 
 class LabelTextMatcher:
     def __init__(self, terms: Sequence[LabelTerm]):
         self.terms = list(terms)
+        self.action_groups = sorted(
+            {action_group for term in self.terms for action_group in term.action_groups},
+            key=_natural_sort_key,
+        )
 
     @classmethod
     def from_config_dir(cls, config_dir: str | Path = DEFAULT_LABEL_CONFIG_DIR) -> "LabelTextMatcher":
@@ -55,10 +63,18 @@ class LabelTextMatcher:
     def score_text(self, text: str) -> LabelMatchResult:
         normalized_text = normalize_text(text)
         if not normalized_text or not self.terms:
-            return LabelMatchResult(score=0.0, matched_terms=(), term_count=len(self.terms))
+            return LabelMatchResult(
+                score=0.0,
+                matched_terms=(),
+                term_count=len(self.terms),
+                coverage_score=0.0,
+                matched_action_groups=(),
+                total_action_groups=len(self.action_groups),
+            )
 
         score = 0.0
         matched_terms: List[str] = []
+        matched_action_groups = set()
         matched_normalized = set()
         for term in self.terms:
             if term.normalized in matched_normalized:
@@ -66,12 +82,18 @@ class LabelTextMatcher:
             if term.normalized and term.normalized in normalized_text:
                 matched_normalized.add(term.normalized)
                 matched_terms.append(term.text)
+                matched_action_groups.update(term.action_groups)
                 score += term.weight * min(len(term.normalized), 12)
 
+        total_action_groups = len(self.action_groups)
+        coverage_score = len(matched_action_groups) / total_action_groups if total_action_groups else 0.0
         return LabelMatchResult(
             score=round(score, 4),
             matched_terms=tuple(matched_terms[:20]),
             term_count=len(self.terms),
+            coverage_score=round(coverage_score, 4),
+            matched_action_groups=tuple(sorted(matched_action_groups, key=_natural_sort_key)),
+            total_action_groups=total_action_groups,
         )
 
 
@@ -86,8 +108,8 @@ def load_label_terms(config_dir: str | Path = DEFAULT_LABEL_CONFIG_DIR) -> List[
             data = json.loads(json_path.read_text(encoding="utf-8"))
         except Exception:
             continue
-        for text, source in _iter_config_texts(data):
-            _add_term_variants(terms_by_normalized, text, source)
+        for text, source, action_group in _iter_config_texts(data):
+            _add_term_variants(terms_by_normalized, text, source, action_group)
 
     return sorted(terms_by_normalized.values(), key=lambda item: (-item.weight, item.normalized))
 
@@ -116,22 +138,22 @@ def normalize_text(text: Optional[str]) -> str:
     return "".join(_TEXT_KEEP_RE.findall(text))
 
 
-def _iter_config_texts(data: dict) -> Iterable[tuple[str, str]]:
+def _iter_config_texts(data: dict) -> Iterable[tuple[str, str, Optional[str]]]:
     action_labels = data.get("action_labels")
     if isinstance(action_labels, dict):
-        for value in action_labels.values():
+        for action_group, value in action_labels.items():
             if isinstance(value, str):
-                yield value, "action_label"
+                yield value, "action_label", str(action_group)
 
     labels = data.get("labels")
     if isinstance(labels, dict):
         for value in labels.values():
             if isinstance(value, str):
-                yield value, "label"
+                yield value, "label", None
 
     action_rules = data.get("action_rules")
     if isinstance(action_rules, dict):
-        for rules in action_rules.values():
+        for action_group, rules in action_rules.items():
             if not isinstance(rules, dict):
                 continue
             for rule_name in ("strong", "medium", "fuzzy", "weak"):
@@ -140,10 +162,15 @@ def _iter_config_texts(data: dict) -> Iterable[tuple[str, str]]:
                     continue
                 for value in values:
                     if isinstance(value, str):
-                        yield value, rule_name
+                        yield value, rule_name, str(action_group)
 
 
-def _add_term_variants(terms_by_normalized: Dict[str, LabelTerm], text: str, source: str) -> None:
+def _add_term_variants(
+    terms_by_normalized: Dict[str, LabelTerm],
+    text: str,
+    source: str,
+    action_group: Optional[str],
+) -> None:
     values = [text]
     stripped = _LEADING_NUMBER_RE.sub("", text)
     if stripped != text:
@@ -155,13 +182,32 @@ def _add_term_variants(terms_by_normalized: Dict[str, LabelTerm], text: str, sou
             continue
         weight = _RULE_WEIGHTS.get(source, 1.0)
         current = terms_by_normalized.get(normalized)
+        action_groups = set(current.action_groups) if current is not None else set()
+        if action_group is not None:
+            action_groups.add(action_group)
         if current is None or weight > current.weight:
             terms_by_normalized[normalized] = LabelTerm(
                 text=value,
                 normalized=normalized,
                 weight=weight,
                 source=source,
+                action_groups=tuple(sorted(action_groups, key=_natural_sort_key)),
             )
+        elif action_groups != set(current.action_groups):
+            terms_by_normalized[normalized] = LabelTerm(
+                text=current.text,
+                normalized=current.normalized,
+                weight=current.weight,
+                source=current.source,
+                action_groups=tuple(sorted(action_groups, key=_natural_sort_key)),
+            )
+
+
+def _natural_sort_key(value: str) -> tuple[int, object]:
+    try:
+        return (0, int(value))
+    except ValueError:
+        return (1, value)
 
 
 __all__ = [
