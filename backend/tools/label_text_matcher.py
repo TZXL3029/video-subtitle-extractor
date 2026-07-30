@@ -49,8 +49,20 @@ class LabelMatchResult:
 
 
 class LabelTextMatcher:
-    def __init__(self, terms: Sequence[LabelTerm]):
+    def __init__(
+        self,
+        terms: Sequence[LabelTerm],
+        *,
+        label_id: str = "",
+        name: str = "",
+        description: str = "",
+        path: str | Path | None = None,
+    ):
         self.terms = list(terms)
+        self.label_id = label_id
+        self.name = name
+        self.description = description
+        self.path = Path(path) if path is not None else None
         self.action_groups = sorted(
             {action_group for term in self.terms for action_group in term.action_groups},
             key=_natural_sort_key,
@@ -59,6 +71,10 @@ class LabelTextMatcher:
     @classmethod
     def from_config_dir(cls, config_dir: str | Path = DEFAULT_LABEL_CONFIG_DIR) -> "LabelTextMatcher":
         return cls(load_label_terms(config_dir))
+
+    @classmethod
+    def from_config_file(cls, json_path: str | Path) -> "LabelTextMatcher":
+        return load_label_matcher_file(json_path)
 
     def score_text(self, text: str) -> LabelMatchResult:
         normalized_text = normalize_text(text)
@@ -97,19 +113,77 @@ class LabelTextMatcher:
         )
 
 
+def load_label_matcher_file(json_path: str | Path) -> LabelTextMatcher:
+    json_path = Path(json_path)
+    data = _read_config_json(json_path)
+    label_id = str(data.get("id") or data.get("label_id") or data.get("name") or json_path.stem)
+    name = str(data.get("name") or label_id)
+    description = str(data.get("description") or "")
+    return LabelTextMatcher(
+        _load_label_terms_from_data(data),
+        label_id=label_id,
+        name=name,
+        description=description,
+        path=json_path,
+    )
+
+
+def load_label_matchers(config_dir: str | Path = DEFAULT_LABEL_CONFIG_DIR) -> List[LabelTextMatcher]:
+    config_dir = Path(config_dir)
+    if not config_dir.exists():
+        return []
+
+    if config_dir.is_file():
+        if config_dir.suffix.lower() != ".json":
+            return []
+        try:
+            return [load_label_matcher_file(config_dir)]
+        except Exception:
+            return []
+
+    matchers = []
+    for json_path in sorted(config_dir.glob("*.json")):
+        try:
+            matcher = load_label_matcher_file(json_path)
+        except Exception:
+            continue
+        if matcher.terms:
+            matchers.append(matcher)
+    return matchers
+
+
 def load_label_terms(config_dir: str | Path = DEFAULT_LABEL_CONFIG_DIR) -> List[LabelTerm]:
     config_dir = Path(config_dir)
     if not config_dir.exists():
         return []
 
+    if config_dir.is_file():
+        try:
+            return _load_label_terms_from_data(_read_config_json(config_dir))
+        except Exception:
+            return []
+
     terms_by_normalized: Dict[str, LabelTerm] = {}
     for json_path in sorted(config_dir.glob("*.json")):
         try:
-            data = json.loads(json_path.read_text(encoding="utf-8"))
+            data = _read_config_json(json_path)
         except Exception:
             continue
-        for text, source, action_group in _iter_config_texts(data):
-            _add_term_variants(terms_by_normalized, text, source, action_group)
+        for term in _load_label_terms_from_data(data):
+            current = terms_by_normalized.get(term.normalized)
+            if current is None or term.weight > current.weight:
+                terms_by_normalized[term.normalized] = term
+            elif current is not None:
+                action_groups = set(current.action_groups)
+                action_groups.update(term.action_groups)
+                if action_groups != set(current.action_groups):
+                    terms_by_normalized[term.normalized] = LabelTerm(
+                        text=current.text,
+                        normalized=current.normalized,
+                        weight=current.weight,
+                        source=current.source,
+                        action_groups=tuple(sorted(action_groups, key=_natural_sort_key)),
+                    )
 
     return sorted(terms_by_normalized.values(), key=lambda item: (-item.weight, item.normalized))
 
@@ -136,6 +210,18 @@ def normalize_text(text: Optional[str]) -> str:
         return ""
     text = unicodedata.normalize("NFKC", str(text)).lower()
     return "".join(_TEXT_KEEP_RE.findall(text))
+
+
+def _read_config_json(json_path: Path) -> dict:
+    data = json.loads(json_path.read_text(encoding="utf-8"))
+    return data if isinstance(data, dict) else {}
+
+
+def _load_label_terms_from_data(data: dict) -> List[LabelTerm]:
+    terms_by_normalized: Dict[str, LabelTerm] = {}
+    for text, source, action_group in _iter_config_texts(data):
+        _add_term_variants(terms_by_normalized, text, source, action_group)
+    return sorted(terms_by_normalized.values(), key=lambda item: (-item.weight, item.normalized))
 
 
 def _iter_config_texts(data: dict) -> Iterable[tuple[str, str, Optional[str]]]:
@@ -215,6 +301,8 @@ __all__ = [
     "LabelMatchResult",
     "LabelTextMatcher",
     "LabelTerm",
+    "load_label_matcher_file",
+    "load_label_matchers",
     "load_label_terms",
     "normalize_text",
     "read_srt_text",

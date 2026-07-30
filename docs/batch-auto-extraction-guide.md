@@ -157,6 +157,10 @@ python scripts/batch_auto_extract.py D:/videos --vsf-decoder ffmpeg
 # 多个 ROI 候选同时入选时，指定标准招式字库目录用于最终字幕文本比对
 python scripts/batch_auto_extract.py D:/videos --label-config-dir D:/autoCut/autocut/label_configs
 
+# 指定只使用某一个字库；未指定时会先按视频名自动选择
+python scripts/batch_auto_extract.py D:/videos --label taiji24
+python scripts/batch_auto_extract.py D:/videos --label baduanjin
+
 # 禁用 VideoSubFinder 前的兼容转码，用于对比排查
 python scripts/batch_auto_extract.py D:/videos --no-vsf-transcode
 ```
@@ -165,6 +169,7 @@ python scripts/batch_auto_extract.py D:/videos --no-vsf-transcode
 如果传入 `-o/--output`，`*.subtitle_area.json` 和最终 `.srt` 会写入指定输出目录；未传入时仍写在原视频旁边。
 批处理默认会在 ROI 识别结束后，在项目 `output/<视频名>_vsf_input/vsf_input.mp4` 生成一个临时 H.264/yuv420p 兼容副本，供后续所有 VideoSubFinder 候选和 OCR 取帧共用；VideoSubFinder 默认先用 OpenCV 解码，失败且未产出结果时自动重试 FFmpeg；如果两个解码器仍失败，会保底改用 `frame_det` 扫描当前 ROI；最终 `.srt` 输出到原视频旁边或 `-o/--output` 指定目录。
 当多个 ROI 候选同时达到置信度阈值时，批处理会为每个候选生成临时 SRT，提取文本后和标准招式字库做快速子串匹配；最终只复制匹配得分最高的 SRT 到目标输出位置，共享转码副本和其他候选临时结果会被删除。
+字库按 JSON 文件独立加载和评分，`coverage` 的分母只来自当前字库的动作组，不会把八段锦和太极拳等字库粗暴合并。传入 `--label` 时只使用指定字库；未传入时，批处理先根据视频文件名匹配字库文件名、配置名称/描述和内置别名（如“八段锦”“太极拳”“24式”），命中后停止继续匹配；视频名没有命中字库时，才对同一候选 SRT 文本分别用每个字库评分。
 
 ## 需要的小改造
 
@@ -240,6 +245,8 @@ video.srt
   "status": "ok",
   "selected_candidate_index": 0,
   "text_match_score": 128.0,
+  "text_match_coverage": 0.75,
+  "text_match_label": "taiji24",
   "candidates": [
     {
       "roi": {

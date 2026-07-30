@@ -29,6 +29,10 @@ EARLY_STOP_TEMPORAL_LABELS = {"primary_subtitle", SHORT_PRIMARY_SUBTITLE_LABEL}
 ROI_RESCUE_SAMPLE_MULTIPLIER = 4
 ROI_RESCUE_MIN_SAMPLES = 240
 ROI_CANDIDATE_JSON_LIMIT = 10
+LABEL_FILENAME_ALIASES = {
+    "baduanjin": ("八段锦",),
+    "taiji24": ("太极", "太极拳", "24式", "二十四式"),
+}
 
 
 def parse_args() -> argparse.Namespace:
@@ -55,6 +59,11 @@ def parse_args() -> argparse.Namespace:
         "--label-config-dir",
         default="D:/autoCut/autocut/label_configs",
         help="Directory containing standard action label JSON files for multi-ROI candidate text matching.",
+    )
+    parser.add_argument(
+        "--label",
+        default=None,
+        help="Use one label dictionary by JSON stem, name, filename, or JSON path. Defaults to auto selection per video.",
     )
     parser.add_argument(
         "--vsf-decoder",
@@ -87,7 +96,10 @@ def main() -> int:
     if not video_paths:
         logging.error("No video files found.")
         return 2
-    args.label_matcher = load_label_matcher(args.label_config_dir)
+    try:
+        args.label_matchers = load_label_matchers(args.label_config_dir, args.label)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
 
     summary = {
         "total": len(video_paths),
@@ -170,7 +182,8 @@ def process_video(video_path: Path, args: argparse.Namespace) -> str:
     shared_vsf_input_root = None
     try:
         shared_vsf_input_path, shared_vsf_input_root = prepare_shared_vsf_input_after_roi(video_path, args)
-        if candidate_entries and args.label_matcher and args.label_matcher.terms:
+        label_matchers = select_label_matchers_for_video(video_path, args.label_matchers)
+        if candidate_entries and label_matchers:
             return extract_and_select_candidate_srt(
                 video_path,
                 srt_path,
@@ -178,6 +191,7 @@ def process_video(video_path: Path, args: argparse.Namespace) -> str:
                 result,
                 candidate_entries,
                 args,
+                label_matchers=label_matchers,
                 vsf_input_video_path=shared_vsf_input_path,
                 rescue_attempted=roi_rescue_attempted,
             )
@@ -249,15 +263,96 @@ def subtitle_output_path(video_path: Path, output_dir: Path | None = None) -> Pa
     return video_path.with_name(filename)
 
 
-def load_label_matcher(label_config_dir: str):
-    from backend.tools.label_text_matcher import LabelTextMatcher
+def load_label_matchers(label_config_dir: str, selected_label: str | None = None):
+    from backend.tools.label_text_matcher import load_label_matcher_file, load_label_matchers as load_matcher_dir
 
-    matcher = LabelTextMatcher.from_config_dir(label_config_dir)
-    if matcher.terms:
-        logging.info("Loaded standard action label terms: %s from %s", len(matcher.terms), label_config_dir)
-    else:
-        logging.warning("No standard action label terms loaded from: %s", label_config_dir)
-    return matcher
+    if selected_label:
+        selected_path = Path(selected_label)
+        if selected_path.exists():
+            if not selected_path.is_file() or selected_path.suffix.lower() != ".json":
+                raise ValueError(f"--label must point to a JSON file when used as a path: {selected_label}")
+            matcher = load_label_matcher_file(selected_path)
+            if not matcher.terms:
+                raise ValueError(f"No label terms loaded from --label: {selected_label}")
+            logging.info("Loaded selected label dictionary: %s terms=%s path=%s", matcher.label_id, len(matcher.terms), matcher.path)
+            return [matcher]
+
+    matchers = load_matcher_dir(label_config_dir)
+    if not matchers:
+        logging.warning("No standard action label dictionaries loaded from: %s", label_config_dir)
+        return []
+
+    if selected_label:
+        matcher = resolve_label_matcher(matchers, selected_label)
+        if matcher is None:
+            available = ", ".join(format_label_matcher_name(item) for item in matchers)
+            raise ValueError(f"Unknown --label {selected_label!r}. Available labels: {available}")
+        logging.info("Loaded selected label dictionary: %s terms=%s path=%s", matcher.label_id, len(matcher.terms), matcher.path)
+        return [matcher]
+
+    logging.info(
+        "Loaded standard action label dictionaries: %s from %s (%s)",
+        len(matchers),
+        label_config_dir,
+        ", ".join(format_label_matcher_name(item) for item in matchers),
+    )
+    return matchers
+
+
+def resolve_label_matcher(matchers, selected_label: str):
+    lookup = normalize_label_lookup_text(Path(selected_label).stem if selected_label.lower().endswith(".json") else selected_label)
+    for matcher in matchers:
+        values = {
+            matcher.label_id,
+            matcher.name,
+            matcher.path.name if matcher.path is not None else "",
+            matcher.path.stem if matcher.path is not None else "",
+        }
+        if lookup in {normalize_label_lookup_text(value) for value in values if value}:
+            return matcher
+    return None
+
+
+def select_label_matchers_for_video(video_path: Path, matchers):
+    if not matchers:
+        return []
+    if len(matchers) == 1:
+        logging.info("Use selected label dictionary for video: %s label=%s", video_path.name, matchers[0].label_id)
+        return list(matchers)
+
+    video_text = normalize_label_lookup_text(video_path.stem)
+    for matcher in matchers:
+        for token in label_matcher_video_tokens(matcher):
+            if token and token in video_text:
+                logging.info("Auto-selected label dictionary by video name: %s label=%s token=%s", video_path.name, matcher.label_id, token)
+                return [matcher]
+
+    logging.info("No label dictionary matched video name; scoring with each dictionary: %s", video_path.name)
+    return list(matchers)
+
+
+def label_matcher_video_tokens(matcher) -> Sequence[str]:
+    values = [
+        matcher.label_id,
+        matcher.name,
+        matcher.description,
+        matcher.path.stem if matcher.path is not None else "",
+        matcher.path.name if matcher.path is not None else "",
+    ]
+    values.extend(LABEL_FILENAME_ALIASES.get(matcher.path.stem if matcher.path is not None else "", ()))
+    values.extend(LABEL_FILENAME_ALIASES.get(matcher.label_id, ()))
+    return tuple(dict.fromkeys(normalize_label_lookup_text(value) for value in values if value))
+
+
+def normalize_label_lookup_text(value: str) -> str:
+    from backend.tools.label_text_matcher import normalize_text
+
+    return normalize_text(value)
+
+
+def format_label_matcher_name(matcher) -> str:
+    path_name = matcher.path.name if matcher.path is not None else matcher.label_id
+    return f"{matcher.label_id} ({path_name})"
 
 
 def prepare_shared_vsf_input_after_roi(video_path: Path, args: argparse.Namespace) -> tuple[Path, Path | None]:
@@ -404,6 +499,7 @@ def extract_and_select_candidate_srt(
     candidate_entries,
     args,
     *,
+    label_matchers,
     vsf_input_video_path: Path,
     rescue_attempted: bool = False,
 ) -> str:
@@ -464,7 +560,7 @@ def extract_and_select_candidate_srt(
                     continue
 
                 text = read_srt_text(candidate_srt)
-                match_result = args.label_matcher.score_text(text)
+                label_matcher, match_result = best_label_match_for_text(text, label_matchers)
                 evaluation = {
                     "ordinal": ordinal,
                     "candidate_index": candidate_index,
@@ -472,13 +568,15 @@ def extract_and_select_candidate_srt(
                     "subtitle_area": subtitle_area,
                     "srt_path": candidate_srt,
                     "extractor": extractor,
+                    "label_matcher": label_matcher,
                     "text_match": match_result,
                 }
                 evaluations.append(evaluation)
                 processed_count += 1
                 logging.info(
-                    "ROI candidate scored: candidate=%s text_score=%.4f coverage=%.4f matched=%s",
+                    "ROI candidate scored: candidate=%s label=%s text_score=%.4f coverage=%.4f matched=%s",
                     ordinal,
+                    label_matcher.label_id,
                     match_result.score,
                     match_result.coverage_score,
                     ", ".join(match_result.matched_terms[:8]) if match_result.matched_terms else "-",
@@ -489,8 +587,9 @@ def extract_and_select_candidate_srt(
                 ):
                     finalize_candidate_selection(evaluation, final_srt_path, result, roi_path, save_result_json, config)
                     logging.info(
-                        "Selected ROI candidate early: %s coverage=%.4f text_score=%.4f roi_score=%.4f output=%s",
+                        "Selected ROI candidate early: %s label=%s coverage=%.4f text_score=%.4f roi_score=%.4f output=%s",
                         ordinal,
+                        label_matcher.label_id,
                         match_result.coverage_score,
                         match_result.score,
                         candidate.score,
@@ -548,8 +647,9 @@ def extract_and_select_candidate_srt(
             finalize_candidate_selection(best, final_srt_path, result, roi_path, save_result_json, config)
 
             logging.info(
-                "Selected ROI candidate: %s coverage=%.4f text_score=%.4f roi_score=%.4f output=%s",
+                "Selected ROI candidate: %s label=%s coverage=%.4f text_score=%.4f roi_score=%.4f output=%s",
                 best["ordinal"],
+                best["label_matcher"].label_id,
                 best["text_match"].coverage_score,
                 best["text_match"].score,
                 best["candidate"].score,
@@ -558,6 +658,25 @@ def extract_and_select_candidate_srt(
             return "success"
     finally:
         shutil.rmtree(candidate_root, ignore_errors=True)
+
+
+def best_label_match_for_text(text: str, label_matchers):
+    evaluations = [(matcher, matcher.score_text(text)) for matcher in label_matchers]
+    return max(
+        evaluations,
+        key=lambda item: (
+            item[1].coverage_score,
+            item[1].score,
+            -label_matcher_order_key(label_matchers, item[0]),
+        ),
+    )
+
+
+def label_matcher_order_key(label_matchers, matcher) -> int:
+    for index, item in enumerate(label_matchers):
+        if item is matcher:
+            return index
+    return len(label_matchers)
 
 
 def order_candidate_entries_for_extraction(candidate_entries):
@@ -623,6 +742,7 @@ def record_candidate_match_result(
     result.selected_candidate_index = ensure_result_candidate(result, evaluation["candidate"])
     result.text_match_score = evaluation["text_match"].score
     result.text_match_coverage = evaluation["text_match"].coverage_score
+    result.text_match_label = evaluation["label_matcher"].label_id
     if status is not None:
         result.status = status
     if reason is not None:

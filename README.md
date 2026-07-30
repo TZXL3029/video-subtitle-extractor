@@ -221,7 +221,7 @@ python ./backend/main.py
 
 #### 6. 自动批量提取来源较杂的视频
 
-如果批量视频的分辨率、字幕位置不一致，可以使用自动批量提取脚本。脚本会对每个视频自动检测字幕区域 ROI，生成 `*.subtitle_area.json`，高置信度时继续调用 VideoSubFinder + OCR 生成同名 `.srt`。自动 ROI 会同时生成横向和竖向候选，统计候选区域的时域覆盖率 TPR，优先选择 TPR 在 20%-75% 的主字幕区域，排除 TPR < 10% 的随机噪声/背景文本；TPR > 75% 的高覆盖候选会保留但降权。多个 ROI 候选同时入选时，批处理会在 ROI 结束后只生成一次兼容转码副本，分别生成临时字幕并和 `D:/autoCut/autocut/label_configs` 中的标准招式字库快速比对，只保留得分最高的最终 `.srt`。VideoSubFinder 默认先用 OpenCV 解码，失败且未产出结果时自动重试 FFmpeg；如果两个解码器仍失败，会保底改用 `frame_det` 扫描当前 ROI。
+如果批量视频的分辨率、字幕位置不一致，可以使用自动批量提取脚本。脚本会对每个视频自动检测字幕区域 ROI，生成 `*.subtitle_area.json`，高置信度时继续调用 VideoSubFinder + OCR 生成同名 `.srt`。自动 ROI 会同时生成横向和竖向候选，统计候选区域的时域覆盖率 TPR，优先选择 TPR 在 20%-75% 的主字幕区域，排除 TPR < 10% 的随机噪声/背景文本；TPR > 75% 的高覆盖候选会保留但降权。多个 ROI 候选同时入选时，批处理会在 ROI 结束后只生成一次兼容转码副本，分别生成临时字幕并和 `D:/autoCut/autocut/label_configs` 中的标准招式字库快速比对，只保留得分最高的最终 `.srt`。字库会按 JSON 独立匹配，coverage 不跨字库合并；可用 `--label` 指定单个字库，未指定时先按视频名自动选择，视频名未命中才分别用每个字库评分。VideoSubFinder 默认先用 OpenCV 解码，失败且未产出结果时自动重试 FFmpeg；如果两个解码器仍失败，会保底改用 `frame_det` 扫描当前 ROI。
 
 ```shell
 python scripts/batch_auto_extract.py <视频文件或目录>
@@ -259,6 +259,10 @@ python scripts/batch_auto_extract.py D:/videos --samples 600 --max-samples 1200
 
 # 指定标准招式字库目录，用于多个 ROI 候选的字幕文本比对
 python scripts/batch_auto_extract.py D:/videos --label-config-dir D:/autoCut/autocut/label_configs
+
+# 指定只使用某一个字库；未指定时会先按视频名自动选择
+python scripts/batch_auto_extract.py D:/videos --label taiji24
+python scripts/batch_auto_extract.py D:/videos --label baduanjin
 ```
 
 输出文件示例：

@@ -77,6 +77,7 @@ class AutoSubtitleAreaResult:
     selected_candidate_index: Optional[int] = None
     text_match_score: Optional[float] = None
     text_match_coverage: Optional[float] = None
+    text_match_label: Optional[str] = None
 
     def to_subtitle_area(self):
         if self.subtitle_roi is None:
@@ -123,6 +124,8 @@ class AutoSubtitleAreaResult:
             data["text_match_score"] = round(self.text_match_score, 4)
         if self.text_match_coverage is not None:
             data["text_match_coverage"] = round(self.text_match_coverage, 4)
+        if self.text_match_label:
+            data["text_match_label"] = self.text_match_label
         if self.subtitle_roi is not None:
             xmin, xmax, ymin, ymax = _limit_roi_area(self.subtitle_roi, self.width, self.height)
             data["subtitle_roi"] = {"xmin": xmin, "xmax": xmax, "ymin": ymin, "ymax": ymax}
@@ -184,6 +187,7 @@ class AutoSubtitleAreaResult:
             text_match_coverage=(
                 float(data["text_match_coverage"]) if data.get("text_match_coverage") is not None else None
             ),
+            text_match_label=str(data["text_match_label"]) if data.get("text_match_label") else None,
         )
 
 
