@@ -47,7 +47,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--force-roi", action="store_true", help="Regenerate *.subtitle_area.json.")
     parser.add_argument("--force-srt", action="store_true", help="Regenerate existing *.srt files.")
     parser.add_argument("--samples", type=int, default=None, help="Exact frame sample count for ROI detection.")
-    parser.add_argument("--max-samples", type=int, default=1000, help="Upper bound of sampled frames per video.")
+    parser.add_argument("--max-samples", type=int, default=1200, help="Upper bound of sampled frames per video.")
     parser.add_argument("--min-confidence", type=float, default=0.5, help="Minimum ROI confidence required to run OCR.")
     parser.add_argument("--ocr-drop-score", type=int, default=70, help="Discard OCR text below this confidence percentage.")
     parser.add_argument("--no-roi-progress", action="store_true", help="Hide ROI frame sampling progress bars.")

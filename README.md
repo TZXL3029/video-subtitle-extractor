@@ -255,7 +255,7 @@ python scripts/batch_auto_extract.py D:/videos --force-srt
 python scripts/batch_auto_extract.py D:/videos --min-confidence 0.65
 
 # 控制 ROI 抽样帧数，数值越大越稳但越慢
-python scripts/batch_auto_extract.py D:/videos --samples 600 --max-samples 1000
+python scripts/batch_auto_extract.py D:/videos --samples 600 --max-samples 1200
 
 # 指定标准招式字库目录，用于多个 ROI 候选的字幕文本比对
 python scripts/batch_auto_extract.py D:/videos --label-config-dir D:/autoCut/autocut/label_configs

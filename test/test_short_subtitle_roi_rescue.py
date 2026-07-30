@@ -78,10 +78,12 @@ class ShortSubtitleRoiRescueTests(unittest.TestCase):
         self.assertEqual(entries[0][1].temporal_presence_label, "short_primary_subtitle")
 
     def test_roi_rescue_sample_count_increases_until_configured_limit(self) -> None:
-        self.assertEqual(batch_auto_extract.calculate_roi_rescue_samples(45, 1000), 240)
-        self.assertEqual(batch_auto_extract.calculate_roi_rescue_samples(240, 1000), 960)
-        self.assertEqual(batch_auto_extract.calculate_roi_rescue_samples(300, 500), 500)
-        self.assertIsNone(batch_auto_extract.calculate_roi_rescue_samples(500, 500))
+        self.assertEqual(batch_auto_extract.calculate_roi_rescue_samples(45, 1200), 240)
+        self.assertEqual(batch_auto_extract.calculate_roi_rescue_samples(90, 1200), 360)
+        self.assertEqual(batch_auto_extract.calculate_roi_rescue_samples(150, 1200), 600)
+        self.assertEqual(batch_auto_extract.calculate_roi_rescue_samples(240, 1200), 960)
+        self.assertEqual(batch_auto_extract.calculate_roi_rescue_samples(300, 1200), 1200)
+        self.assertIsNone(batch_auto_extract.calculate_roi_rescue_samples(1200, 1200))
 
     def test_rescue_filter_keeps_only_new_roi_candidates(self) -> None:
         existing = SimpleNamespace(roi=(300, 900, 600, 650), orientation="horizontal")
@@ -148,7 +150,7 @@ class ShortSubtitleRoiRescueTests(unittest.TestCase):
                 Path("demo.mp4"),
                 original,
                 Path("demo.subtitle_area.json"),
-                argparse.Namespace(max_samples=1000, min_confidence=0.5, no_roi_progress=True),
+                argparse.Namespace(max_samples=1200, min_confidence=0.5, no_roi_progress=True),
                 existing_entries=[],
             )
         finally:
