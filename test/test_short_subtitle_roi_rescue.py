@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
+import tempfile
 import types
 import unittest
 from pathlib import Path
@@ -10,6 +12,7 @@ from types import SimpleNamespace
 
 from backend.tools.auto_subtitle_area import AutoSubtitleAreaResult, SubtitleAreaCandidate
 from backend.tools import auto_subtitle_area
+from backend.tools.ocr_subtitle_area import build_ocr_subtitle_area_payload
 from scripts import batch_auto_extract
 
 
@@ -202,6 +205,92 @@ class ShortSubtitleRoiRescueTests(unittest.TestCase):
         self.assertEqual(result.status, "ok")
         self.assertEqual(result.reason, "")
         self.assertEqual(result.candidates, [candidate])
+        self.assertEqual(len(saved), 1)
+
+    def test_ocr_subtitle_area_payload_uses_outer_bbox_from_raw_ocr_boxes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            raw_path = Path(tmp) / "raw.txt"
+            raw_path.write_text(
+                "00000010\t(120, 680, 610, 650)\t第一行\n"
+                "00000020\t(100, 720, 600, 660)\t第二行\n"
+                "bad\t(0, 1, 2, 3)\tignored\n"
+                "00000030\tno-coordinate\tignored\n",
+                encoding="utf-8",
+            )
+
+            payload = build_ocr_subtitle_area_payload(raw_path, video="demo.mp4")
+
+        self.assertEqual(payload["status"], "ok")
+        self.assertEqual(payload["video"], "demo.mp4")
+        self.assertEqual(payload["box_count"], 2)
+        self.assertEqual(payload["frame_count"], 2)
+        self.assertEqual(payload["frame_start"], 10)
+        self.assertEqual(payload["frame_end"], 20)
+        self.assertEqual(payload["ocr_subtitle_bbox"], {"xmin": 100, "xmax": 720, "ymin": 600, "ymax": 660})
+
+    def test_selected_candidate_copies_ocr_subtitle_area_json(self) -> None:
+        result = AutoSubtitleAreaResult(
+            video="demo.mp4",
+            width=1280,
+            height=720,
+            fps=30,
+            frame_count=1800,
+            subtitle_roi=None,
+            confidence=0,
+            sampled_frames=240,
+            status="low_confidence",
+            candidates=[],
+        )
+        candidate = SubtitleAreaCandidate(
+            roi=(320, 900, 600, 640),
+            score=0.42,
+            hits=2,
+            frame_hits=2,
+            time_bucket_hits=2,
+            temporal_presence_label="short_primary_subtitle",
+            excluded=False,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            candidate_srt = tmp_path / "candidate.srt"
+            candidate_srt.write_text("1\n00:00:00,000 --> 00:00:01,000\ntext\n", encoding="utf-8")
+            candidate_ocr_area = tmp_path / "candidate.ocr_subtitle_area.json"
+            candidate_ocr_area.write_text(
+                json.dumps({"ocr_subtitle_bbox": {"xmin": 1, "xmax": 2, "ymin": 3, "ymax": 4}}),
+                encoding="utf-8",
+            )
+            final_srt = tmp_path / "demo.srt"
+            final_ocr_area = tmp_path / "demo.ocr_subtitle_area.json"
+            saved = []
+
+            batch_auto_extract.finalize_candidate_selection(
+                {
+                    "candidate": candidate,
+                    "subtitle_area": FakeSubtitleArea(570, 670, 280, 940),
+                    "srt_path": candidate_srt,
+                    "ocr_area_path": candidate_ocr_area,
+                    "extractor": SimpleNamespace(srt2txt=lambda path: None),
+                    "text_match": SimpleNamespace(score=0.8, coverage_score=0.7),
+                    "label_matcher": SimpleNamespace(label_id="demo"),
+                },
+                final_srt,
+                result,
+                tmp_path / "demo.subtitle_area.json",
+                lambda saved_result, output_path: saved.append((saved_result, output_path)),
+                SimpleNamespace(generateTxt=SimpleNamespace(value=False)),
+                ocr_area_path=final_ocr_area,
+            )
+
+            copied_payload = json.loads(final_ocr_area.read_text(encoding="utf-8"))
+            final_srt_exists = final_srt.exists()
+
+        self.assertTrue(final_srt_exists)
+        self.assertEqual(copied_payload["ocr_subtitle_bbox"], {"xmin": 1, "xmax": 2, "ymin": 3, "ymax": 4})
+        self.assertEqual(result.subtitle_roi, (280, 940, 570, 670))
+        self.assertEqual(result.text_match_score, 0.8)
+        self.assertEqual(result.text_match_coverage, 0.7)
+        self.assertEqual(result.text_match_label, "demo")
         self.assertEqual(len(saved), 1)
 
     def test_vsf_candidate_failure_marks_candidate_excluded_in_json(self) -> None:

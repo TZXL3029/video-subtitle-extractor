@@ -221,6 +221,7 @@ scan_strategy is None → 保持当前自动选择逻辑
 ```text
 video.mp4
 video.subtitle_area.json
+video.ocr_subtitle_area.json
 video.srt
 ```
 
@@ -266,6 +267,27 @@ video.srt
       "excluded": false
     }
   ]
+}
+```
+
+OCR 结束后还会生成 `*.ocr_subtitle_area.json`，保存本次 OCR 实际识别到的字幕文本框最大外接范围：
+
+```json
+{
+  "video": "video.mp4",
+  "source": "ocr_raw_subtitles",
+  "coordinate_order": ["xmin", "xmax", "ymin", "ymax"],
+  "box_count": 128,
+  "frame_count": 64,
+  "status": "ok",
+  "frame_start": 1234,
+  "frame_end": 5678,
+  "ocr_subtitle_bbox": {
+    "xmin": 180,
+    "xmax": 1740,
+    "ymin": 805,
+    "ymax": 910
+  }
 }
 ```
 

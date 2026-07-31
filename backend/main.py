@@ -31,6 +31,7 @@ from backend.config import *
 from backend.tools.hardware_accelerator import HardwareAccelerator
 from backend.tools import reformat
 from backend.tools.ocr import OcrRecogniser, get_coordinates
+from backend.tools.ocr_subtitle_area import save_ocr_subtitle_area_json
 from backend.tools import subtitle_ocr
 from backend.tools.paddle_model_config import PaddleModelConfig
 from backend.tools.process_manager import ProcessManager
@@ -111,6 +112,8 @@ class SubtitleExtractor:
         self.raw_subtitle_path = os.path.join(self.subtitle_output_dir, 'raw.txt')
         # 定义输出字幕文件路径
         self.subtitle_output_path = os.path.splitext(self.video_path)[0] + '.srt'
+        # OCR 识别出的字幕文本框最大外接范围 JSON 输出路径。
+        self.ocr_subtitle_area_output_path = None
         # 自定义ocr对象
         self.ocr = None
         # 总处理进度（帧提取100 + OCR100 + 后处理100 = 300）
@@ -206,6 +209,8 @@ class SubtitleExtractor:
                 self.append_output(tr['Main']['FinishDeleteNonSub'])
 
             self.update_progress(post=20)
+
+            self.export_ocr_subtitle_area()
 
             # 打印开始字幕生成提示
             self.append_output(tr['Main']['StartGenerateSub'])
@@ -897,6 +902,20 @@ class SubtitleExtractor:
             self._merge_adjacent_duplicate_subtitles(self.subtitle_output_path)
             # 返回持续时间低于1s的字幕行
             return post_process_subtitle
+
+    def export_ocr_subtitle_area(self):
+        """
+        导出本次 OCR 实际识别出的字幕文本框最大外接范围。
+        """
+        if not self.ocr_subtitle_area_output_path:
+            return None
+        payload = save_ocr_subtitle_area_json(
+            self.raw_subtitle_path,
+            self.ocr_subtitle_area_output_path,
+            video=os.path.basename(self.video_path),
+        )
+        self.append_output(f"OCR subtitle area: {self.ocr_subtitle_area_output_path}")
+        return payload
 
     def generate_subtitle_file_vsf(self):
         if not self.use_vsf:

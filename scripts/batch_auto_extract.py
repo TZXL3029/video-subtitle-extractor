@@ -44,7 +44,7 @@ def parse_args() -> argparse.Namespace:
         "--output",
         dest="output_dir",
         default=None,
-        help="Directory for generated *.srt and *.subtitle_area.json files. Defaults to each video's directory.",
+        help="Directory for generated *.srt, *.subtitle_area.json, and *.ocr_subtitle_area.json files. Defaults to each video's directory.",
     )
     parser.add_argument("--recursive", action="store_true", help="Scan input directories recursively.")
     parser.add_argument("--extensions", default=",".join(DEFAULT_EXTENSIONS), help="Comma-separated video extensions.")
@@ -146,8 +146,10 @@ def collect_video_paths(inputs: Iterable[str], extensions: Sequence[str], *, rec
 def process_video(video_path: Path, args: argparse.Namespace) -> str:
     roi_path = subtitle_area_json_path(video_path, args.output_dir)
     srt_path = subtitle_output_path(video_path, args.output_dir)
+    ocr_area_path = ocr_subtitle_area_json_path(video_path, args.output_dir)
     roi_path.parent.mkdir(parents=True, exist_ok=True)
     srt_path.parent.mkdir(parents=True, exist_ok=True)
+    ocr_area_path.parent.mkdir(parents=True, exist_ok=True)
 
     if srt_path.exists() and not args.force_srt:
         logging.info("Skip existing SRT: %s", srt_path)
@@ -193,6 +195,7 @@ def process_video(video_path: Path, args: argparse.Namespace) -> str:
                 args,
                 label_matchers=label_matchers,
                 vsf_input_video_path=shared_vsf_input_path,
+                ocr_area_path=ocr_area_path,
                 rescue_attempted=roi_rescue_attempted,
             )
 
@@ -203,6 +206,7 @@ def process_video(video_path: Path, args: argparse.Namespace) -> str:
                 args,
                 subtitle_output_path=srt_path,
                 vsf_input_video_path=shared_vsf_input_path,
+                ocr_subtitle_area_output_path=ocr_area_path,
             )
         except RuntimeError as exc:
             if candidate_entries and is_vsf_candidate_exclusion_error(exc):
@@ -258,6 +262,13 @@ def subtitle_area_json_path(video_path: Path, output_dir: Path | None = None) ->
 
 def subtitle_output_path(video_path: Path, output_dir: Path | None = None) -> Path:
     filename = f"{video_path.stem}.srt"
+    if output_dir is not None:
+        return output_dir / filename
+    return video_path.with_name(filename)
+
+
+def ocr_subtitle_area_json_path(video_path: Path, output_dir: Path | None = None) -> Path:
+    filename = f"{video_path.stem}.ocr_subtitle_area.json"
     if output_dir is not None:
         return output_dir / filename
     return video_path.with_name(filename)
@@ -501,6 +512,7 @@ def extract_and_select_candidate_srt(
     *,
     label_matchers,
     vsf_input_video_path: Path,
+    ocr_area_path: Path,
     rescue_attempted: bool = False,
 ) -> str:
     from backend.config import config
@@ -523,6 +535,7 @@ def extract_and_select_candidate_srt(
                 ordinal = processed_count + 1
                 candidate_srt = candidate_root / f"candidate_{ordinal}.srt"
                 candidate_work_dir = candidate_root / f"work_{ordinal}"
+                candidate_ocr_area = candidate_work_dir / "ocr_subtitle_area.json"
                 logging.info(
                     "Evaluate ROI candidate %s/%s: roi_score=%.4f tpr=%.4f label=%s",
                     ordinal,
@@ -539,6 +552,7 @@ def extract_and_select_candidate_srt(
                         subtitle_output_path=candidate_srt,
                         temp_output_dir=candidate_work_dir,
                         vsf_input_video_path=vsf_input_video_path,
+                        ocr_subtitle_area_output_path=candidate_ocr_area,
                     )
                 except Exception as exc:
                     if is_vsf_candidate_exclusion_error(exc):
@@ -567,6 +581,7 @@ def extract_and_select_candidate_srt(
                     "candidate": candidate,
                     "subtitle_area": subtitle_area,
                     "srt_path": candidate_srt,
+                    "ocr_area_path": candidate_ocr_area,
                     "extractor": extractor,
                     "label_matcher": label_matcher,
                     "text_match": match_result,
@@ -585,7 +600,15 @@ def extract_and_select_candidate_srt(
                     candidate.temporal_presence_label in EARLY_STOP_TEMPORAL_LABELS
                     and match_result.coverage_score >= LABEL_COVERAGE_EARLY_STOP
                 ):
-                    finalize_candidate_selection(evaluation, final_srt_path, result, roi_path, save_result_json, config)
+                    finalize_candidate_selection(
+                        evaluation,
+                        final_srt_path,
+                        result,
+                        roi_path,
+                        save_result_json,
+                        config,
+                        ocr_area_path=ocr_area_path,
+                    )
                     logging.info(
                         "Selected ROI candidate early: %s label=%s coverage=%.4f text_score=%.4f roi_score=%.4f output=%s",
                         ordinal,
@@ -644,7 +667,15 @@ def extract_and_select_candidate_srt(
                 )
                 return "low_confidence"
 
-            finalize_candidate_selection(best, final_srt_path, result, roi_path, save_result_json, config)
+            finalize_candidate_selection(
+                best,
+                final_srt_path,
+                result,
+                roi_path,
+                save_result_json,
+                config,
+                ocr_area_path=ocr_area_path,
+            )
 
             logging.info(
                 "Selected ROI candidate: %s label=%s coverage=%.4f text_score=%.4f roi_score=%.4f output=%s",
@@ -714,8 +745,19 @@ def is_low_text_match_confidence(highest_text_score: float, highest_coverage: fl
     )
 
 
-def finalize_candidate_selection(evaluation, final_srt_path, result, roi_path, save_result_json, config) -> None:
+def finalize_candidate_selection(
+    evaluation,
+    final_srt_path,
+    result,
+    roi_path,
+    save_result_json,
+    config,
+    *,
+    ocr_area_path: Path | None = None,
+) -> None:
     shutil.copy2(evaluation["srt_path"], final_srt_path)
+    if ocr_area_path is not None and evaluation.get("ocr_area_path") and Path(evaluation["ocr_area_path"]).exists():
+        shutil.copy2(evaluation["ocr_area_path"], ocr_area_path)
     if config.generateTxt.value:
         evaluation["extractor"].srt2txt(str(final_srt_path))
 
@@ -820,6 +862,7 @@ def run_subtitle_extractor_vsf_only(
     subtitle_output_path: Path,
     temp_output_dir: Path | None = None,
     vsf_input_video_path: Path | None = None,
+    ocr_subtitle_area_output_path: Path | None = None,
 ):
     try:
         return run_subtitle_extractor(
@@ -829,6 +872,7 @@ def run_subtitle_extractor_vsf_only(
             subtitle_output_path=subtitle_output_path,
             temp_output_dir=temp_output_dir,
             vsf_input_video_path=vsf_input_video_path,
+            ocr_subtitle_area_output_path=ocr_subtitle_area_output_path,
             scan_strategy="vsf",
         )
     except RuntimeError as exc:
@@ -858,6 +902,7 @@ def run_subtitle_extractor(
     subtitle_output_path: Path,
     temp_output_dir: Path | None = None,
     vsf_input_video_path: Path | None = None,
+    ocr_subtitle_area_output_path: Path | None = None,
     scan_strategy: str = "vsf",
 ):
     from backend.main import SubtitleExtractor
@@ -869,6 +914,8 @@ def run_subtitle_extractor(
     if temp_output_dir is not None:
         configure_extractor_temp_paths(extractor, temp_output_dir)
     extractor.subtitle_output_path = str(subtitle_output_path)
+    if ocr_subtitle_area_output_path is not None:
+        extractor.ocr_subtitle_area_output_path = str(ocr_subtitle_area_output_path)
     if vsf_input_video_path is not None:
         extractor.vsf_input_video_path = str(vsf_input_video_path)
     extractor.sub_area = subtitle_area
