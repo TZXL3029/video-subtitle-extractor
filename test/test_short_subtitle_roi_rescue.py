@@ -342,6 +342,34 @@ class ShortSubtitleRoiRescueTests(unittest.TestCase):
         self.assertEqual(result.text_match_label, "demo")
         self.assertEqual(len(saved), 1)
 
+    def test_selected_candidate_regenerates_ocr_area_from_raw_when_candidate_json_was_cleaned(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            raw_subtitle_path = tmp_path / "raw.txt"
+            raw_subtitle_path.write_text(
+                "00000010\t(120, 680, 610, 650)\t字幕\n"
+                "00000020\t(100, 720, 600, 660)\t字幕\n",
+                encoding="utf-8",
+            )
+            final_ocr_area = tmp_path / "demo.ocr_subtitle_area.json"
+            evaluation = {
+                "ocr_area_path": tmp_path / "missing-candidate.ocr_subtitle_area.json",
+                "extractor": SimpleNamespace(
+                    raw_subtitle_path=str(raw_subtitle_path),
+                    video_path=str(tmp_path / "demo.mp4"),
+                    ocr_subtitle_area_overlap_threshold=0.5,
+                    ocr_subtitle_area_max_size_ratio=3.0,
+                ),
+            }
+
+            copied = batch_auto_extract.copy_candidate_ocr_area(evaluation, final_ocr_area)
+            payload = json.loads(final_ocr_area.read_text(encoding="utf-8"))
+
+        self.assertTrue(copied)
+        self.assertEqual(payload["video"], "demo.mp4")
+        self.assertEqual(payload["ocr_subtitle_bbox"], {"xmin": 100, "xmax": 720, "ymin": 600, "ymax": 660})
+        self.assertEqual(len(payload["ocr_subtitle_bboxes"]), 1)
+
     def test_vsf_candidate_failure_marks_candidate_excluded_in_json(self) -> None:
         result = AutoSubtitleAreaResult(
             video="demo.mp4",

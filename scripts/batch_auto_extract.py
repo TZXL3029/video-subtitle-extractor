@@ -549,7 +549,7 @@ def extract_and_select_candidate_srt(
                 ordinal = processed_count + 1
                 candidate_srt = candidate_root / f"candidate_{ordinal}.srt"
                 candidate_work_dir = candidate_root / f"work_{ordinal}"
-                candidate_ocr_area = candidate_work_dir / "ocr_subtitle_area.json"
+                candidate_ocr_area = candidate_root / f"candidate_{ordinal}.ocr_subtitle_area.json"
                 logging.info(
                     "Evaluate ROI candidate %s/%s: roi_score=%.4f tpr=%.4f label=%s",
                     ordinal,
@@ -772,12 +772,36 @@ def finalize_candidate_selection(
     ocr_area_path: Path | None = None,
 ) -> None:
     shutil.copy2(evaluation["srt_path"], final_srt_path)
-    if ocr_area_path is not None and evaluation.get("ocr_area_path") and Path(evaluation["ocr_area_path"]).exists():
-        shutil.copy2(evaluation["ocr_area_path"], ocr_area_path)
+    copy_candidate_ocr_area(evaluation, ocr_area_path)
     if config.generateTxt.value:
         evaluation["extractor"].srt2txt(str(final_srt_path))
 
     record_candidate_match_result(evaluation, result, roi_path, save_result_json, status="ok", reason="")
+
+
+def copy_candidate_ocr_area(evaluation, ocr_area_path: Path | None) -> bool:
+    if ocr_area_path is None:
+        return False
+    candidate_ocr_area = evaluation.get("ocr_area_path")
+    if candidate_ocr_area and Path(candidate_ocr_area).exists():
+        shutil.copy2(candidate_ocr_area, ocr_area_path)
+        return True
+
+    extractor = evaluation.get("extractor")
+    raw_subtitle_path = getattr(extractor, "raw_subtitle_path", None)
+    if not raw_subtitle_path or not Path(raw_subtitle_path).exists():
+        return False
+
+    from backend.tools.ocr_subtitle_area import save_ocr_subtitle_area_json
+
+    save_ocr_subtitle_area_json(
+        raw_subtitle_path,
+        ocr_area_path,
+        video=Path(getattr(extractor, "video_path", "")).name or None,
+        merge_overlap_threshold=getattr(extractor, "ocr_subtitle_area_overlap_threshold", 0.5),
+        merge_max_size_ratio=getattr(extractor, "ocr_subtitle_area_max_size_ratio", 3.0),
+    )
+    return True
 
 
 def record_candidate_match_result(
