@@ -270,7 +270,7 @@ video.srt
 }
 ```
 
-OCR 结束后还会生成 `*.ocr_subtitle_area.json`，保存本次 OCR 实际识别到的字幕文本框范围。`ocr_subtitle_bbox` 是兼容用的全局总框，`ocr_subtitle_bboxes` 是按重合度合并后的多个字幕框；默认当两个框 `intersection_area / min_box_area >= 0.5` 且宽高差距不超过 3 倍时才合并。
+OCR 结束后还会生成 `*.ocr_subtitle_area.json`，保存本次 OCR 实际识别到的字幕文本框范围。`ocr_subtitle_bboxes` 是按重合度合并后的多个字幕框；默认当两个框 `intersection_area / min_box_area >= 0.5` 且宽高差距不超过 3 倍时才合并。
 
 ```json
 {
@@ -285,12 +285,6 @@ OCR 结束后还会生成 `*.ocr_subtitle_area.json`，保存本次 OCR 实际�
   "status": "ok",
   "frame_start": 1234,
   "frame_end": 5678,
-  "ocr_subtitle_bbox": {
-    "xmin": 180,
-    "xmax": 1740,
-    "ymin": 805,
-    "ymax": 910
-  },
   "ocr_subtitle_bboxes": [
     {
       "xmin": 180,

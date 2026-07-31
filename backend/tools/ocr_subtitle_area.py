@@ -60,7 +60,6 @@ def build_ocr_subtitle_area_payload(
         payload.update(
             {
                 "status": "no_ocr_subtitle",
-                "ocr_subtitle_bbox": None,
                 "ocr_subtitle_bboxes": [],
             }
         )
@@ -77,12 +76,6 @@ def build_ocr_subtitle_area_payload(
             "status": "ok",
             "frame_start": min(frame_numbers),
             "frame_end": max(frame_numbers),
-            "ocr_subtitle_bbox": {
-                "xmin": min(item[1] for item in coordinates),
-                "xmax": max(item[2] for item in coordinates),
-                "ymin": min(item[3] for item in coordinates),
-                "ymax": max(item[4] for item in coordinates),
-            },
             "ocr_subtitle_bboxes": merged_boxes,
         }
     )

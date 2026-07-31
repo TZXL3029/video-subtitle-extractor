@@ -227,7 +227,7 @@ class ShortSubtitleRoiRescueTests(unittest.TestCase):
         self.assertEqual(payload["frame_count"], 3)
         self.assertEqual(payload["frame_start"], 10)
         self.assertEqual(payload["frame_end"], 30)
-        self.assertEqual(payload["ocr_subtitle_bbox"], {"xmin": 100, "xmax": 820, "ymin": 120, "ymax": 660})
+        self.assertNotIn("ocr_subtitle_bbox", payload)
         self.assertEqual(
             payload["ocr_subtitle_bboxes"],
             [
@@ -306,7 +306,7 @@ class ShortSubtitleRoiRescueTests(unittest.TestCase):
             candidate_srt.write_text("1\n00:00:00,000 --> 00:00:01,000\ntext\n", encoding="utf-8")
             candidate_ocr_area = tmp_path / "candidate.ocr_subtitle_area.json"
             candidate_ocr_area.write_text(
-                json.dumps({"ocr_subtitle_bbox": {"xmin": 1, "xmax": 2, "ymin": 3, "ymax": 4}}),
+                json.dumps({"ocr_subtitle_bboxes": [{"xmin": 1, "xmax": 2, "ymin": 3, "ymax": 4}]}),
                 encoding="utf-8",
             )
             final_srt = tmp_path / "demo.srt"
@@ -335,7 +335,7 @@ class ShortSubtitleRoiRescueTests(unittest.TestCase):
             final_srt_exists = final_srt.exists()
 
         self.assertTrue(final_srt_exists)
-        self.assertEqual(copied_payload["ocr_subtitle_bbox"], {"xmin": 1, "xmax": 2, "ymin": 3, "ymax": 4})
+        self.assertEqual(copied_payload["ocr_subtitle_bboxes"], [{"xmin": 1, "xmax": 2, "ymin": 3, "ymax": 4}])
         self.assertEqual(result.subtitle_roi, (280, 940, 570, 670))
         self.assertEqual(result.text_match_score, 0.8)
         self.assertEqual(result.text_match_coverage, 0.7)
@@ -367,8 +367,21 @@ class ShortSubtitleRoiRescueTests(unittest.TestCase):
 
         self.assertTrue(copied)
         self.assertEqual(payload["video"], "demo.mp4")
-        self.assertEqual(payload["ocr_subtitle_bbox"], {"xmin": 100, "xmax": 720, "ymin": 600, "ymax": 660})
         self.assertEqual(len(payload["ocr_subtitle_bboxes"]), 1)
+        self.assertEqual(
+            payload["ocr_subtitle_bboxes"][0],
+            {
+                "xmin": 100,
+                "xmax": 720,
+                "ymin": 600,
+                "ymax": 660,
+                "box_count": 2,
+                "frame_count": 2,
+                "frame_start": 10,
+                "frame_end": 20,
+                "index": 1,
+            },
+        )
 
     def test_vsf_candidate_failure_marks_candidate_excluded_in_json(self) -> None:
         result = AutoSubtitleAreaResult(
