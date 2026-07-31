@@ -270,13 +270,16 @@ video.srt
 }
 ```
 
-OCR 结束后还会生成 `*.ocr_subtitle_area.json`，保存本次 OCR 实际识别到的字幕文本框最大外接范围：
+OCR 结束后还会生成 `*.ocr_subtitle_area.json`，保存本次 OCR 实际识别到的字幕文本框范围。`ocr_subtitle_bbox` 是兼容用的全局总框，`ocr_subtitle_bboxes` 是按重合度合并后的多个字幕框；默认当两个框 `intersection_area / min_box_area >= 0.5` 且宽高差距不超过 3 倍时才合并。
 
 ```json
 {
   "video": "video.mp4",
   "source": "ocr_raw_subtitles",
   "coordinate_order": ["xmin", "xmax", "ymin", "ymax"],
+  "overlap_metric": "intersection_area/min_box_area",
+  "merge_overlap_threshold": 0.5,
+  "merge_max_size_ratio": 3.0,
   "box_count": 128,
   "frame_count": 64,
   "status": "ok",
@@ -287,9 +290,35 @@ OCR 结束后还会生成 `*.ocr_subtitle_area.json`，保存本次 OCR 实际�
     "xmax": 1740,
     "ymin": 805,
     "ymax": 910
-  }
+  },
+  "ocr_subtitle_bboxes": [
+    {
+      "xmin": 180,
+      "xmax": 1740,
+      "ymin": 805,
+      "ymax": 910,
+      "box_count": 96,
+      "frame_count": 48,
+      "frame_start": 1234,
+      "frame_end": 5200,
+      "index": 1
+    },
+    {
+      "xmin": 220,
+      "xmax": 1680,
+      "ymin": 120,
+      "ymax": 180,
+      "box_count": 32,
+      "frame_count": 16,
+      "frame_start": 1300,
+      "frame_end": 5678,
+      "index": 2
+    }
+  ]
 }
 ```
+
+可通过 `--ocr-area-overlap-threshold` 调整合并重合度阈值，通过 `--ocr-area-max-size-ratio` 控制两个框宽高差距过大时不合并。
 
 低置信度时可写：
 

@@ -114,6 +114,8 @@ class SubtitleExtractor:
         self.subtitle_output_path = os.path.splitext(self.video_path)[0] + '.srt'
         # OCR 识别出的字幕文本框最大外接范围 JSON 输出路径。
         self.ocr_subtitle_area_output_path = None
+        self.ocr_subtitle_area_overlap_threshold = 0.5
+        self.ocr_subtitle_area_max_size_ratio = 3.0
         # 自定义ocr对象
         self.ocr = None
         # 总处理进度（帧提取100 + OCR100 + 后处理100 = 300）
@@ -913,6 +915,8 @@ class SubtitleExtractor:
             self.raw_subtitle_path,
             self.ocr_subtitle_area_output_path,
             video=os.path.basename(self.video_path),
+            merge_overlap_threshold=self.ocr_subtitle_area_overlap_threshold,
+            merge_max_size_ratio=self.ocr_subtitle_area_max_size_ratio,
         )
         self.append_output(f"OCR subtitle area: {self.ocr_subtitle_area_output_path}")
         return payload

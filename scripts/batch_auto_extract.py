@@ -54,6 +54,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-samples", type=int, default=1200, help="Upper bound of sampled frames per video.")
     parser.add_argument("--min-confidence", type=float, default=0.5, help="Minimum ROI confidence required to run OCR.")
     parser.add_argument("--ocr-drop-score", type=int, default=70, help="Discard OCR text below this confidence percentage.")
+    parser.add_argument(
+        "--ocr-area-overlap-threshold",
+        type=float,
+        default=0.5,
+        help="Merge OCR subtitle boxes when intersection/min-area overlap is at least this threshold.",
+    )
+    parser.add_argument(
+        "--ocr-area-max-size-ratio",
+        type=float,
+        default=3.0,
+        help="Do not merge OCR subtitle boxes when width or height differs by more than this ratio.",
+    )
     parser.add_argument("--no-roi-progress", action="store_true", help="Hide ROI frame sampling progress bars.")
     parser.add_argument(
         "--label-config-dir",
@@ -207,6 +219,8 @@ def process_video(video_path: Path, args: argparse.Namespace) -> str:
                 subtitle_output_path=srt_path,
                 vsf_input_video_path=shared_vsf_input_path,
                 ocr_subtitle_area_output_path=ocr_area_path,
+                ocr_subtitle_area_overlap_threshold=args.ocr_area_overlap_threshold,
+                ocr_subtitle_area_max_size_ratio=args.ocr_area_max_size_ratio,
             )
         except RuntimeError as exc:
             if candidate_entries and is_vsf_candidate_exclusion_error(exc):
@@ -553,6 +567,8 @@ def extract_and_select_candidate_srt(
                         temp_output_dir=candidate_work_dir,
                         vsf_input_video_path=vsf_input_video_path,
                         ocr_subtitle_area_output_path=candidate_ocr_area,
+                        ocr_subtitle_area_overlap_threshold=args.ocr_area_overlap_threshold,
+                        ocr_subtitle_area_max_size_ratio=args.ocr_area_max_size_ratio,
                     )
                 except Exception as exc:
                     if is_vsf_candidate_exclusion_error(exc):
@@ -863,6 +879,8 @@ def run_subtitle_extractor_vsf_only(
     temp_output_dir: Path | None = None,
     vsf_input_video_path: Path | None = None,
     ocr_subtitle_area_output_path: Path | None = None,
+    ocr_subtitle_area_overlap_threshold: float = 0.5,
+    ocr_subtitle_area_max_size_ratio: float = 3.0,
 ):
     try:
         return run_subtitle_extractor(
@@ -873,6 +891,8 @@ def run_subtitle_extractor_vsf_only(
             temp_output_dir=temp_output_dir,
             vsf_input_video_path=vsf_input_video_path,
             ocr_subtitle_area_output_path=ocr_subtitle_area_output_path,
+            ocr_subtitle_area_overlap_threshold=ocr_subtitle_area_overlap_threshold,
+            ocr_subtitle_area_max_size_ratio=ocr_subtitle_area_max_size_ratio,
             scan_strategy="vsf",
         )
     except RuntimeError as exc:
@@ -903,6 +923,8 @@ def run_subtitle_extractor(
     temp_output_dir: Path | None = None,
     vsf_input_video_path: Path | None = None,
     ocr_subtitle_area_output_path: Path | None = None,
+    ocr_subtitle_area_overlap_threshold: float = 0.5,
+    ocr_subtitle_area_max_size_ratio: float = 3.0,
     scan_strategy: str = "vsf",
 ):
     from backend.main import SubtitleExtractor
@@ -916,6 +938,8 @@ def run_subtitle_extractor(
     extractor.subtitle_output_path = str(subtitle_output_path)
     if ocr_subtitle_area_output_path is not None:
         extractor.ocr_subtitle_area_output_path = str(ocr_subtitle_area_output_path)
+        extractor.ocr_subtitle_area_overlap_threshold = ocr_subtitle_area_overlap_threshold
+        extractor.ocr_subtitle_area_max_size_ratio = ocr_subtitle_area_max_size_ratio
     if vsf_input_video_path is not None:
         extractor.vsf_input_video_path = str(vsf_input_video_path)
     extractor.sub_area = subtitle_area

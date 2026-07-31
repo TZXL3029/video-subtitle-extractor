@@ -213,8 +213,9 @@ class ShortSubtitleRoiRescueTests(unittest.TestCase):
             raw_path.write_text(
                 "00000010\t(120, 680, 610, 650)\t第一行\n"
                 "00000020\t(100, 720, 600, 660)\t第二行\n"
+                "00000030\t(500, 820, 120, 160)\t顶部字幕\n"
                 "bad\t(0, 1, 2, 3)\tignored\n"
-                "00000030\tno-coordinate\tignored\n",
+                "00000040\tno-coordinate\tignored\n",
                 encoding="utf-8",
             )
 
@@ -222,11 +223,59 @@ class ShortSubtitleRoiRescueTests(unittest.TestCase):
 
         self.assertEqual(payload["status"], "ok")
         self.assertEqual(payload["video"], "demo.mp4")
-        self.assertEqual(payload["box_count"], 2)
-        self.assertEqual(payload["frame_count"], 2)
+        self.assertEqual(payload["box_count"], 3)
+        self.assertEqual(payload["frame_count"], 3)
         self.assertEqual(payload["frame_start"], 10)
-        self.assertEqual(payload["frame_end"], 20)
-        self.assertEqual(payload["ocr_subtitle_bbox"], {"xmin": 100, "xmax": 720, "ymin": 600, "ymax": 660})
+        self.assertEqual(payload["frame_end"], 30)
+        self.assertEqual(payload["ocr_subtitle_bbox"], {"xmin": 100, "xmax": 820, "ymin": 120, "ymax": 660})
+        self.assertEqual(
+            payload["ocr_subtitle_bboxes"],
+            [
+                {
+                    "xmin": 500,
+                    "xmax": 820,
+                    "ymin": 120,
+                    "ymax": 160,
+                    "box_count": 1,
+                    "frame_count": 1,
+                    "frame_start": 30,
+                    "frame_end": 30,
+                    "index": 1,
+                },
+                {
+                    "xmin": 100,
+                    "xmax": 720,
+                    "ymin": 600,
+                    "ymax": 660,
+                    "box_count": 2,
+                    "frame_count": 2,
+                    "frame_start": 10,
+                    "frame_end": 20,
+                    "index": 2,
+                },
+            ],
+        )
+
+    def test_ocr_subtitle_area_keeps_boxes_separate_when_size_ratio_is_too_large(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            raw_path = Path(tmp) / "raw.txt"
+            raw_path.write_text(
+                "00000010\t(100, 1100, 500, 700)\t大框\n"
+                "00000020\t(450, 650, 540, 580)\t小框\n",
+                encoding="utf-8",
+            )
+
+            payload = build_ocr_subtitle_area_payload(
+                raw_path,
+                video="demo.mp4",
+                merge_overlap_threshold=0.5,
+                merge_max_size_ratio=3.0,
+            )
+
+        self.assertEqual(payload["status"], "ok")
+        self.assertEqual(len(payload["ocr_subtitle_bboxes"]), 2)
+        self.assertEqual(payload["ocr_subtitle_bboxes"][0]["box_count"], 1)
+        self.assertEqual(payload["ocr_subtitle_bboxes"][1]["box_count"], 1)
 
     def test_selected_candidate_copies_ocr_subtitle_area_json(self) -> None:
         result = AutoSubtitleAreaResult(
